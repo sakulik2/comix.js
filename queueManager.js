@@ -1,4 +1,7 @@
 import PQueue from 'p-queue';
+import fs from 'fs-extra';
+import path from 'path';
+import { extractComic } from './extractor.js';
 
 import { config } from './config.js';
 

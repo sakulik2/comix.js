@@ -1,7 +1,9 @@
 import { config } from './config.js';
 import { runActiveScan } from './scanner.js';
-
+import { addBookToQueue } from './queueManager.js';
 import express from 'express';
+import fs from 'fs-extra';
+import path from 'path';
 
 
 const app = express();
