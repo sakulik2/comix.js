@@ -1,6 +1,9 @@
 import { config } from './config.js';
 import { runActiveScan } from './scanner.js';
 
+import express from 'express';
+
+
 const app = express();
 const PORT = config.PORT;
 
@@ -26,12 +29,12 @@ app.get('/api/comics/:id/page/:pageNumber', async (req, res) => {
         // 2. 加载映射表进行查找
         const MAPPING_FILE = './mapping.json';
         let mapping = {};
-        try { mapping = await fs.readJson(MAPPING_FILE); } catch(e) {}
+        try { mapping = await fs.readJson(MAPPING_FILE); } catch (e) { }
 
         const filename = mapping[comicId];
 
         if (!filename) {
-            return res.status(404).json({ 
+            return res.status(404).json({
                 error: '未找到该 ID 关联的漫画文件',
                 details: '请运行 npm run scan 自动生成映射，或使用 node mapper.js 手动绑定'
             });
@@ -56,7 +59,7 @@ app.get('/api/comics/:id/page/:pageNumber', async (req, res) => {
     // 2. 读取索引并返回图片
     try {
         const indexList = await fs.readJson(indexPath);
-        
+
         // 页码转为 0 索引
         const imageFile = indexList[pageNumber - 1];
 
@@ -88,7 +91,7 @@ app.get('/api/comics/:id/page/:pageNumber', async (req, res) => {
 
 app.listen(PORT, async () => {
     console.log(`[Server] 高性能漫画分发服务已启动: http://localhost:${PORT}`);
-    
+
     // 如果配置了启动自扫，则执行主动扫描
     if (config.AUTO_SCAN_ON_STARTUP) {
         console.log('[Server] 检测到开启了启动自扫，正在同步库物理状态...');
