@@ -1,0 +1,19 @@
+services:
+  comix:
+    build: .
+    ports:
+      - "3000:3000"
+    volumes:
+      # 原始漫画目录 - 挂载你存放 CBR/CBZ/PDF 的文件夹
+      - ./volumes/raw:/library/raw
+      # 缓存目录 - 解压后的 WebP 图片和索引，也存放 mapping.json
+      - ./volumes/cache:/library/cache
+    environment:
+      - PORT=3000
+      - RAW_LIBRARY_PATH=/library/raw/
+      - CACHE_LIBRARY_PATH=/library/cache/
+      # mapping.json 存入缓存卷，随卷一起持久化
+      - MAPPING_FILE=/library/cache/mapping.json
+      - CONCURRENCY=2
+      - AUTO_SCAN_ON_STARTUP=true
+    restart: unless-stopped

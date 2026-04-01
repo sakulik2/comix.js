@@ -1,7 +1,7 @@
 import fs from 'fs-extra';
 import { config } from './config.js';
 
-const MAPPING_FILE = './mapping.json';
+const MAPPING_FILE = config.MAPPING_FILE;
 
 async function loadMapping() {
     try {

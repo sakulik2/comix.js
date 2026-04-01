@@ -11,7 +11,7 @@ export async function runActiveScan() {
     
     try {
         const files = await fs.readdir(config.RAW_LIBRARY_PATH);
-        const MAPPING_FILE = './mapping.json';
+        const MAPPING_FILE = config.MAPPING_FILE;
         
         // 加载现有映射，用于去重和自动补全
         let mapping = {};
