@@ -12,6 +12,7 @@
   "license": "ISC",
   "type": "module",
   "dependencies": {
+    "cors": "^2.8.6",
     "express": "^5.2.1",
     "fs-extra": "^11.3.4",
     "p-queue": "^8.0.1"
