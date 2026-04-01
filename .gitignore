@@ -1,6 +1,6 @@
 # Dependencies
 node_modules/
-package-lock.json (可选，根据个人风格)
+package-lock.json
 
 # Local Environment
 .env
