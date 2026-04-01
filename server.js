@@ -1,18 +1,11 @@
-import express from 'express';
-import fs from 'fs-extra';
-import path from 'path';
-import { addBookToQueue } from './queueManager.js';
+import { config } from './config.js';
+import { runActiveScan } from './scanner.js';
 
 const app = express();
-const PORT = process.env.PORT || 3000;
-
-// 配置存放区路径 (可根据实际挂载点调整)
-const RAW_LIBRARY_PATH = '/library/raw/';
-const CACHE_LIBRARY_PATH = '/library/cache/';
+const PORT = config.PORT;
 
 /**
- * 极速页面访问 API
- * GET /api/comics/:id/page/:pageNumber (页码从 1 开始)
+ * 极速页面访问 API (路由逻辑保持不变，路径由 config 管理)
  */
 app.get('/api/comics/:id/page/:pageNumber', async (req, res) => {
     const comicId = req.params.id;
@@ -23,41 +16,40 @@ app.get('/api/comics/:id/page/:pageNumber', async (req, res) => {
         return res.status(400).json({ error: '无效的页码' });
     }
 
-    const comicCacheDir = path.join(CACHE_LIBRARY_PATH, `comic_${comicId}`);
+    const comicCacheDir = path.join(config.CACHE_LIBRARY_PATH, `comic_${comicId}`);
     const indexPath = path.join(comicCacheDir, 'index.json');
 
     // 1. 检查索引文件是否存在 (指示解压是否已完成)
     const isReady = await fs.pathExists(indexPath);
 
     if (!isReady) {
-        // 解压尚未完成，尝试将该书推入队列 (addBookToQueue 会执行幂等检查)
-        // 注意：此处假设文件名可通过 ID 获取，您可以根据实际需求调整
-        // 为演示场景，我们假设文件名为 "comic_{id}.cbr"（或 .cbz, .pdf）
-        // 建议在生产环境中通过数据库查询实际物理路径
-        
-        // 动态查找支持的原始文件后缀
-        const extensions = ['.cbr', '.rar', '.cbz', '.zip', '.pdf'];
-        let rawFilePath = null;
+        // 2. 加载映射表进行查找
+        const MAPPING_FILE = './mapping.json';
+        let mapping = {};
+        try { mapping = await fs.readJson(MAPPING_FILE); } catch(e) {}
 
-        for (const ext of extensions) {
-            const potentialPath = path.join(RAW_LIBRARY_PATH, `comic_${comicId}${ext}`);
-            if (await fs.pathExists(potentialPath)) {
-                rawFilePath = potentialPath;
-                break;
-            }
+        const filename = mapping[comicId];
+
+        if (!filename) {
+            return res.status(404).json({ 
+                error: '未找到该 ID 关联的漫画文件',
+                details: '请运行 npm run scan 自动生成映射，或使用 node mapper.js 手动绑定'
+            });
         }
 
-        if (!rawFilePath) {
-            return res.status(404).json({ error: '找不到对应的原始漫画文件' });
+        const rawFilePath = path.join(config.RAW_LIBRARY_PATH, filename);
+
+        if (!(await fs.pathExists(rawFilePath))) {
+            return res.status(404).json({ error: '映射指向的物理文件不存在' });
         }
 
         // 推入后台队列
-        addBookToQueue(comicId, rawFilePath, CACHE_LIBRARY_PATH);
+        addBookToQueue(comicId, rawFilePath, config.CACHE_LIBRARY_PATH);
 
-        // 返回 202 Accepted，提示正在处理中
+        // 返回 202 Accepted
         return res.status(202).json({
             status: 'processing',
-            message: '漫画正在进行影子解压/转码中，请稍后刷新重试'
+            message: '发现关联文件，正在启动影子解压/转码...'
         });
     }
 
@@ -94,8 +86,12 @@ app.get('/api/comics/:id/page/:pageNumber', async (req, res) => {
     }
 });
 
-app.listen(PORT, () => {
-    console.log(`[Server] 高性能漫画分发服务已启动在端口: ${PORT}`);
-    console.log(`[Server] 原始库路径: ${RAW_LIBRARY_PATH}`);
-    console.log(`[Server] 缓存库路径: ${CACHE_LIBRARY_PATH}`);
+app.listen(PORT, async () => {
+    console.log(`[Server] 高性能漫画分发服务已启动: http://localhost:${PORT}`);
+    
+    // 如果配置了启动自扫，则执行主动扫描
+    if (config.AUTO_SCAN_ON_STARTUP) {
+        console.log('[Server] 检测到开启了启动自扫，正在同步库物理状态...');
+        await runActiveScan();
+    }
 });
