@@ -10,6 +10,89 @@ const app = express();
 const PORT = config.PORT;
 
 /**
+ * 根路径状态检查
+ */
+app.get('/', (res) => {
+    res.json({
+        service: "Sakulik Comix Streaming Service",
+        status: "Running",
+        apiVersion: "1.0.0"
+    });
+});
+
+/**
+ * 获取全量漫画列表
+ * GET /api/comics
+ */
+app.get('/api/comics', async (req, res) => {
+    const MAPPING_FILE = './mapping.json';
+    let mapping = {};
+    try { mapping = await fs.readJson(MAPPING_FILE); } catch(e) {}
+
+    const list = await Promise.all(Object.keys(mapping).map(async (id) => {
+        const comicCacheDir = path.join(config.CACHE_LIBRARY_PATH, `comic_${id}`);
+        const indexPath = path.join(comicCacheDir, 'index.json');
+        const isReady = await fs.pathExists(indexPath);
+        
+        let totalPages = 0;
+        if (isReady) {
+            try {
+                const index = await fs.readJson(indexPath);
+                totalPages = index.length;
+            } catch (e) {}
+        }
+
+        return {
+            id,
+            originalName: mapping[id],
+            coverUrl: `/api/comics/${id}/page/1`,
+            isReady,
+            totalPages
+        };
+    }));
+
+    res.json(list);
+});
+
+/**
+ * 漫画元数据获取接口
+ * GET /api/comics/:id -> 返回完整文件名、封面、页数及就绪状态
+ */
+app.get('/api/comics/:id', async (req, res) => {
+    const comicId = req.params.id;
+    
+    const MAPPING_FILE = './mapping.json';
+    let mapping = {};
+    try { mapping = await fs.readJson(MAPPING_FILE); } catch(e) {}
+
+    const filename = mapping[comicId];
+    if (!filename) {
+        return res.status(404).json({ error: '未找到该 ID 映射' });
+    }
+
+    const comicCacheDir = path.join(config.CACHE_LIBRARY_PATH, `comic_${comicId}`);
+    const indexPath = path.join(comicCacheDir, 'index.json');
+    const isReady = await fs.pathExists(indexPath);
+
+    let totalPages = 0;
+    if (isReady) {
+        try {
+            const index = await fs.readJson(indexPath);
+            totalPages = index.length;
+        } catch (e) {}
+    }
+
+    res.json({
+        id: comicId,
+        originalName: filename, 
+        coverUrl: `/api/comics/${comicId}/page/1`,
+        totalPages: totalPages,
+        isReady: isReady,
+        status: isReady ? 'ready' : 'processing'
+    });
+});
+
+/**
  * 极速页面访问 API (路由逻辑保持不变，路径由 config 管理)
  */
 app.get('/api/comics/:id/page/:pageNumber', async (req, res) => {
