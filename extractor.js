@@ -132,10 +132,59 @@ async function optimizeImages(cacheDir) {
     }
 }
 
+import { XMLParser } from 'fast-xml-parser';
+
+/**
+ * 解析包内的 ComicInfo.xml 元数据 (采用更健壮的 XML 库方案)
+ */
+async function extractMetadata(cacheDir) {
+    const infoPath = path.join(cacheDir, 'ComicInfo.xml');
+    if (!(await fs.pathExists(infoPath))) return;
+
+    try {
+        const content = await fs.readFile(infoPath, 'utf8');
+        const parser = new XMLParser();
+        const jsonObj = parser.parse(content);
+        const info = jsonObj?.ComicInfo || {};
+
+        // 规范化字段映射
+        const metadata = {
+            title: info.Title,
+            series: info.Series,
+            summary: info.Summary,
+            authors: info.Writer || info.Penciller,
+            genres: info.Genre,
+            publisher: info.Publisher,
+            year: info.Year ? info.Year.toString() : null,
+            issueNumber: info.Number ? info.Number.toString() : null,
+            rating: info.Rating ? parseFloat(info.Rating) : null,
+            isCompleted: info.Manga === 'Completed' || info.Status === 'Completed'
+        };
+
+        // 这里的逻辑很关键：剔除空字段，保持数据纯粹
+        const filtered = Object.fromEntries(
+            Object.entries(metadata).filter(([_, v]) => v != null && v !== "")
+        );
+        
+        if (Object.keys(filtered).length > 0) {
+            await fs.writeJson(path.join(cacheDir, 'metadata.json'), filtered, { spaces: 2 });
+            console.log(`[Extractor] 结构化解析成功: ${filtered.title || 'ComicInfo'}`);
+        }
+        
+        // 解析后删除 xml 临时文件，保持 WebP 目录下只有核心资源
+        await fs.remove(infoPath);
+    } catch (e) {
+        console.error(`[Extractor] 结构化解析元数据失败 [XML库]:`, e);
+    }
+}
+
 /**
  * 统一收尾逻辑：扫描图片文件，自然排序，生成 index.json
  */
 async function generateIndex(cacheDir) {
+    // 提升元数据提取权重：在生成索引前优先尝试提取元数据
+    await extractMetadata(cacheDir);
+
     const files = await fs.readdir(cacheDir);
     
     // 此时目录下应该全是平铺在根部的 .webp

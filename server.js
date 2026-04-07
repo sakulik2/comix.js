@@ -59,12 +59,23 @@ app.get('/api/comics', async (_req, res) => {
 
     const list = await Promise.all(Object.keys(mapping).map(async (id) => {
         const index = await getIndex(id);
+        
+        // 尝试读取本地已提取好的元数据
+        let localMeta = {};
+        const metaPath = path.join(config.CACHE_LIBRARY_PATH, `comic_${id}`, 'metadata.json');
+        try { 
+            if (await fs.pathExists(metaPath)) {
+                localMeta = await fs.readJson(metaPath); 
+            }
+        } catch (e) {}
+
         return {
             id,
             originalName: mapping[id],
             coverUrl: `/api/comics/${id}/page/1`,
             isReady: index !== null,
-            totalPages: index ? index.length : 0
+            totalPages: index ? index.length : 0,
+            ...localMeta
         };
     }));
 
@@ -85,13 +96,24 @@ app.get('/api/comics/:id', async (req, res) => {
     }
 
     const index = await getIndex(comicId);
+    
+    // 尝试读取该漫画的专属元数据
+    let localMeta = {};
+    const metaPath = path.join(config.CACHE_LIBRARY_PATH, `comic_${comicId}`, 'metadata.json');
+    try { 
+        if (await fs.pathExists(metaPath)) {
+            localMeta = await fs.readJson(metaPath); 
+        }
+    } catch (e) {}
+
     res.json({
         id: comicId,
         originalName: filename,
         coverUrl: `/api/comics/${comicId}/page/1`,
         totalPages: index ? index.length : 0,
         isReady: index !== null,
-        status: index !== null ? 'ready' : 'processing'
+        status: index !== null ? 'ready' : 'processing',
+        ...localMeta
     });
 });
 
