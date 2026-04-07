@@ -5,6 +5,7 @@ import express from 'express';
 import cors from 'cors';
 import fs from 'fs-extra';
 import path from 'path';
+import sharp from 'sharp';
 
 const app = express();
 app.use(cors()); // 允许跨域请求，方便 Android 客户端或 Web 端调用
@@ -36,6 +37,23 @@ async function getIndex(comicId) {
         return null; // 未就绪，不写入缓存
     }
 }
+
+// --- 安全鉴权中间件 ---
+// 拦截所有以 /api 开头的请求
+app.use('/api', (req, res, next) => {
+    if (req.method === 'OPTIONS') return next(); // 放行 CORS 预检
+    
+    if (!config.API_KEY || config.API_KEY === '') return next(); // 未配置则不设防
+
+    // 优先读取 HTTP Header，兼容 Query string 方式 (便于某些极简客户端或直链请求)
+    const clientToken = req.headers['x-comix-token'] || req.query.token;
+    
+    if (clientToken === config.API_KEY) {
+        next();
+    } else {
+        res.status(401).json({ error: 'Unauthorized: Invalid or missing x-comix-token' });
+    }
+});
 
 // --- 路由 ---
 
@@ -80,6 +98,46 @@ app.get('/api/comics', async (_req, res) => {
     }));
 
     res.json(list);
+});
+
+/**
+ * 后端元数据检索 (服务端模糊搜索)
+ * GET /api/comics/search?q=keyword
+ */
+app.get('/api/comics/search', async (req, res) => {
+    const query = (req.query.q || '').toLowerCase();
+    const mapping = await getMapping();
+
+    const list = await Promise.all(Object.keys(mapping).map(async (id) => {
+        const index = await getIndex(id);
+        
+        let localMeta = {};
+        const metaPath = path.join(config.CACHE_LIBRARY_PATH, `comic_${id}`, 'metadata.json');
+        try { 
+            if (await fs.pathExists(metaPath)) {
+                localMeta = await fs.readJson(metaPath); 
+            }
+        } catch (e) {}
+
+        return {
+            id,
+            originalName: mapping[id],
+            coverUrl: `/api/comics/${id}/page/1`,
+            isReady: index !== null,
+            totalPages: index ? index.length : 0,
+            ...localMeta
+        };
+    }));
+
+    // 根据查询词在内存中过滤结果
+    const filteredList = list.filter(comic => {
+        const titleLower = (comic.title || '').toLowerCase();
+        const originLower = (comic.originalName || '').toLowerCase();
+        const authorLower = (comic.authors || '').toLowerCase();
+        return titleLower.includes(query) || originLower.includes(query) || authorLower.includes(query);
+    });
+
+    res.json(filteredList);
 });
 
 /**
@@ -154,7 +212,28 @@ app.get('/api/comics/:id/page/:pageNumber', async (req, res) => {
     }
 
     const imagePath = path.resolve(config.CACHE_LIBRARY_PATH, `comic_${comicId}`, imageFile);
-    res.sendFile(imagePath);
+    
+    // 支持按需缩放，利用 sharp 将内存计算压力下放到请求时，解约磁盘空间
+    const targetWidth = parseInt(req.query.width, 10);
+    
+    // 追加 HTTP 缓存强控制，减轻服务端压力
+    res.setHeader('Cache-Control', 'public, max-age=604800, immutable'); // 强制缓存 1 星期
+    
+    if (!isNaN(targetWidth) && targetWidth > 0 && targetWidth < 4000) {
+        res.type('image/webp');
+        // 将源图片通过 sharp 管道流式吐给客户端，不产生临时文件
+        sharp(imagePath)
+            .resize({ width: targetWidth, withoutEnlargement: true })
+            .webp({ quality: parseInt(req.query.quality, 10) || 85 })
+            .pipe(res)
+            .on('error', (e) => {
+                if (!res.headersSent) res.status(500).json({ error: '原图处理失败' });
+                console.error("[Server] 缩放流崩溃", e);
+            });
+    } else {
+        // 无缩放要求或参数非法则直出原文件
+        res.sendFile(imagePath);
+    }
 });
 
 app.listen(PORT, async () => {

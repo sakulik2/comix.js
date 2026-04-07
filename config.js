@@ -22,5 +22,8 @@ export const config = {
     AUTO_SCAN_ON_STARTUP: process.env.AUTO_SCAN_ON_STARTUP !== 'false',
 
     // 服务监听端口
-    PORT: parseInt(process.env.PORT) || 3000
+    PORT: parseInt(process.env.PORT) || 3000,
+
+    // 鉴权 API 秘钥 (如果设置为空，则视为禁用安全校验，建议在生产环境强覆盖)
+    API_KEY: process.env.API_KEY !== undefined ? process.env.API_KEY : ''
 };

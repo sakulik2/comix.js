@@ -13,7 +13,7 @@ const execAsync = promisify(exec);
  */
 export async function extractComic(rawFilePath, cacheDir) {
     const ext = path.extname(rawFilePath).toLowerCase();
-    
+
     // 确保缓存目录存在并清空旧缓存
     await fs.ensureDir(cacheDir);
     await fs.emptyDir(cacheDir);
@@ -91,8 +91,7 @@ async function optimizeImages(cacheDir) {
     };
 
     const allFiles = await getAllFiles(cacheDir);
-    const imageExtensions = ['.jpg', '.jpeg', '.png', '.bmp', '.gif', '.webp']; 
-    const maxWidth = 1400;
+    const imageExtensions = ['.jpg', '.jpeg', '.png', '.bmp', '.gif', '.webp'];
 
     console.log(`[Extractor] 开始递归优化, 发现总文件数: ${allFiles.length}`);
 
@@ -109,8 +108,8 @@ async function optimizeImages(cacheDir) {
 
         try {
             await sharp(filePath)
-                .resize({ width: maxWidth, withoutEnlargement: true })
-                .webp({ quality: 80 })
+                // 移除硬编码的分辨率缩放，保留全尺寸原图精度，动态缩放交给 /page 路由
+                .webp({ quality: 85 })
                 .toFile(outputPath);
 
             // 处理完成后删除原文件
@@ -165,12 +164,12 @@ async function extractMetadata(cacheDir) {
         const filtered = Object.fromEntries(
             Object.entries(metadata).filter(([_, v]) => v != null && v !== "")
         );
-        
+
         if (Object.keys(filtered).length > 0) {
             await fs.writeJson(path.join(cacheDir, 'metadata.json'), filtered, { spaces: 2 });
             console.log(`[Extractor] 结构化解析成功: ${filtered.title || 'ComicInfo'}`);
         }
-        
+
         // 解析后删除 xml 临时文件，保持 WebP 目录下只有核心资源
         await fs.remove(infoPath);
     } catch (e) {
@@ -186,7 +185,7 @@ async function generateIndex(cacheDir) {
     await extractMetadata(cacheDir);
 
     const files = await fs.readdir(cacheDir);
-    
+
     // 此时目录下应该全是平铺在根部的 .webp
     const imageFiles = files.filter(file => path.extname(file).toLowerCase() === '.webp');
 
@@ -194,11 +193,11 @@ async function generateIndex(cacheDir) {
         numeric: true,
         sensitivity: 'base'
     });
-    
+
     imageFiles.sort(collator.compare);
 
     const indexPath = path.join(cacheDir, 'index.json');
     await fs.writeJson(indexPath, imageFiles, { spaces: 2 });
-    
+
     console.log(`[Extractor] 索引生成成功: ${imageFiles.length} 页 (已平铺并转码为 WebP)`);
 }
