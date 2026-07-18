@@ -99,8 +99,9 @@ app.get('/', (_req, res) => {
  */
 app.get('/api/comics', async (_req, res) => {
     const mapping = await getMapping();
+    const keys = Object.keys(mapping);
 
-    const list = await Promise.all(Object.keys(mapping).map(async (id) => {
+    const list = await Promise.all(keys.map(async (id) => {
         const index = await getIndex(id);
         const isReady = index !== null;
         
@@ -109,9 +110,11 @@ app.get('/api/comics', async (_req, res) => {
         const filename = mapping[id];
         const defaultTitle = filename.substring(0, filename.lastIndexOf('.')) || filename;
         const title = localMeta.title || defaultTitle;
+        const numId = keys.indexOf(id) + 1;
 
         return {
             id,
+            numId,
             title,
             originalName: filename,
             coverUrl: `/api/comics/${id}/page/1`,
@@ -131,8 +134,9 @@ app.get('/api/comics', async (_req, res) => {
 app.get('/api/comics/search', async (req, res) => {
     const query = (req.query.q || '').toLowerCase();
     const mapping = await getMapping();
+    const keys = Object.keys(mapping);
 
-    const list = await Promise.all(Object.keys(mapping).map(async (id) => {
+    const list = await Promise.all(keys.map(async (id) => {
         const index = await getIndex(id);
         const isReady = index !== null;
         
@@ -140,9 +144,11 @@ app.get('/api/comics/search', async (req, res) => {
         const filename = mapping[id];
         const defaultTitle = filename.substring(0, filename.lastIndexOf('.')) || filename;
         const title = localMeta.title || defaultTitle;
+        const numId = keys.indexOf(id) + 1;
 
         return {
             id,
+            numId,
             title,
             originalName: filename,
             coverUrl: `/api/comics/${id}/page/1`,
@@ -171,24 +177,38 @@ app.get('/api/comics/:id', async (req, res) => {
     const comicId = req.params.id;
     const mapping = await getMapping();
 
-    const filename = mapping[comicId];
+    let actualId = comicId;
+    let filename = mapping[actualId];
+
+    // 如果输入的是数字 ID，根据 1-based 索引解析出真实的 MD5 ID
+    if (!filename && /^\d+$/.test(comicId)) {
+        const keys = Object.keys(mapping);
+        const index = parseInt(comicId, 10) - 1;
+        if (index >= 0 && index < keys.length) {
+            actualId = keys[index];
+            filename = mapping[actualId];
+        }
+    }
+
     if (!filename) {
         return res.status(404).json({ error: '未找到该 ID 映射' });
     }
 
-    const index = await getIndex(comicId);
+    const index = await getIndex(actualId);
     const isReady = index !== null;
     
     // 尝试读取该漫画的专属元数据（使用缓存）
-    const localMeta = await getMetadata(comicId, isReady);
+    const localMeta = await getMetadata(actualId, isReady);
     const defaultTitle = filename.substring(0, filename.lastIndexOf('.')) || filename;
     const title = localMeta.title || defaultTitle;
+    const numId = Object.keys(mapping).indexOf(actualId) + 1;
 
     res.json({
-        id: comicId,
+        id: actualId,
+        numId,
         title,
         originalName: filename,
-        coverUrl: `/api/comics/${comicId}/page/1`,
+        coverUrl: `/api/comics/${actualId}/page/1`,
         totalPages: index ? index.length : 0,
         isReady,
         status: isReady ? 'ready' : 'processing',
@@ -208,22 +228,33 @@ app.get('/api/comics/:id/page/:pageNumber', async (req, res) => {
         return res.status(400).json({ error: '无效的页码' });
     }
 
-    const index = await getIndex(comicId);
+    const mapping = await getMapping();
+    let actualId = comicId;
+    let filename = mapping[actualId];
+
+    // 如果输入的是数字 ID，根据 1-based 索引解析出真实的 MD5 ID
+    if (!filename && /^\d+$/.test(comicId)) {
+        const keys = Object.keys(mapping);
+        const indexKey = parseInt(comicId, 10) - 1;
+        if (indexKey >= 0 && indexKey < keys.length) {
+            actualId = keys[indexKey];
+            filename = mapping[actualId];
+        }
+    }
+
+    if (!filename) {
+        return res.status(404).json({ error: '未找到 ID 映射' });
+    }
+
+    const index = await getIndex(actualId);
 
     if (!index) {
-        const mapping = await getMapping();
-        const filename = mapping[comicId];
-
-        if (!filename) {
-            return res.status(404).json({ error: '未找到 ID 映射' });
-        }
-
         const rawFilePath = path.join(config.RAW_LIBRARY_PATH, filename);
         if (!(await fs.pathExists(rawFilePath))) {
             return res.status(404).json({ error: '物理文件不存在' });
         }
 
-        addBookToQueue(comicId, rawFilePath, config.CACHE_LIBRARY_PATH);
+        addBookToQueue(actualId, rawFilePath, config.CACHE_LIBRARY_PATH);
         return res.status(202).json({ status: 'processing', message: '正在启动后台解压...' });
     }
 
@@ -232,7 +263,7 @@ app.get('/api/comics/:id/page/:pageNumber', async (req, res) => {
         return res.status(404).json({ error: '页码越界' });
     }
 
-    const imagePath = path.resolve(config.CACHE_LIBRARY_PATH, `comic_${comicId}`, imageFile);
+    const imagePath = path.resolve(config.CACHE_LIBRARY_PATH, `comic_${actualId}`, imageFile);
     
     // 支持按需缩放，利用 sharp 将内存计算压力下放到请求时，解约磁盘空间
     const targetWidth = parseInt(req.query.width, 10);
@@ -281,6 +312,59 @@ app.post('/api/scan', async (req, res) => {
     } catch (e) {
         console.error('[Server] 扫描异常:', e);
         res.status(500).json({ error: '扫描库失败: ' + e.message });
+    }
+});
+
+/**
+ * 物理删除特定漫画文件及解压缓存，并自动同步映射与缓存
+ * DELETE /api/comics/:id
+ */
+app.delete('/api/comics/:id', async (req, res) => {
+    const comicId = req.params.id;
+    const mapping = await getMapping();
+
+    let actualId = comicId;
+    let filename = mapping[actualId];
+
+    // 如果输入的是数字 ID，根据 1-based 索引解析出真实的 MD5 ID
+    if (!filename && /^\d+$/.test(comicId)) {
+        const keys = Object.keys(mapping);
+        const index = parseInt(comicId, 10) - 1;
+        if (index >= 0 && index < keys.length) {
+            actualId = keys[index];
+            filename = mapping[actualId];
+        }
+    }
+
+    if (!filename) {
+        return res.status(404).json({ error: '未找到该 ID 映射' });
+    }
+
+    try {
+        // 1. 删除原始物理文件
+        const rawFilePath = path.join(config.RAW_LIBRARY_PATH, filename);
+        if (await fs.pathExists(rawFilePath)) {
+            await fs.remove(rawFilePath);
+        }
+
+        // 2. 删除缓存文件夹
+        const cacheDir = path.join(config.CACHE_LIBRARY_PATH, `comic_${actualId}`);
+        if (await fs.pathExists(cacheDir)) {
+            await fs.remove(cacheDir);
+        }
+
+        // 3. 更新 mapping 映射并保存
+        delete mapping[actualId];
+        await fs.writeJson(config.MAPPING_FILE, mapping, { spaces: 2 });
+
+        // 4. 清除内存缓存
+        clearAllCaches();
+
+        console.log(`[Server] 已通过 API 物理删除远程漫画: ${filename} (ID: ${actualId})`);
+        res.json({ status: 'success', message: `远程文件 ${filename} 及其缓存已成功删除` });
+    } catch (e) {
+        console.error(`[Server] 删除远程漫画失败:`, e);
+        res.status(500).json({ error: `删除失败: ${e.message}` });
     }
 });
 

@@ -36,7 +36,7 @@ async function main() {
     } 
     else if (args.includes('--list')) {
         console.log('[Mapper] 当前映射列表:');
-        console.table(Object.entries(mapping).map(([id, file]) => ({ ID: id, "文件名": file })));
+        console.table(Object.entries(mapping).map(([id, file], idx) => ({ "编号": idx + 1, ID: id, "文件名": file })));
     }
     else {
         console.log('可用指令:');
