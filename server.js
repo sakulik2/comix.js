@@ -38,6 +38,31 @@ async function getIndex(comicId) {
     }
 }
 
+// metadata.json 缓存：key = comicId, value = object
+// 只缓存就绪状态的元数据，未就绪时不缓存，确保解压后能读取最新元数据
+const metadataCache = new Map();
+
+async function getMetadata(comicId, isReady) {
+    if (metadataCache.has(comicId)) return metadataCache.get(comicId);
+    const metaPath = path.join(config.CACHE_LIBRARY_PATH, `comic_${comicId}`, 'metadata.json');
+    try {
+        if (await fs.pathExists(metaPath)) {
+            const meta = await fs.readJson(metaPath);
+            if (isReady) {
+                metadataCache.set(comicId, meta);
+            }
+            return meta;
+        }
+    } catch (e) {}
+    return {};
+}
+
+function clearAllCaches() {
+    mappingCache = null;
+    indexCache.clear();
+    metadataCache.clear();
+}
+
 // --- 安全鉴权中间件 ---
 // 拦截所有以 /api 开头的请求
 app.use('/api', (req, res, next) => {
@@ -77,21 +102,20 @@ app.get('/api/comics', async (_req, res) => {
 
     const list = await Promise.all(Object.keys(mapping).map(async (id) => {
         const index = await getIndex(id);
+        const isReady = index !== null;
         
-        // 尝试读取本地已提取好的元数据
-        let localMeta = {};
-        const metaPath = path.join(config.CACHE_LIBRARY_PATH, `comic_${id}`, 'metadata.json');
-        try { 
-            if (await fs.pathExists(metaPath)) {
-                localMeta = await fs.readJson(metaPath); 
-            }
-        } catch (e) {}
+        // 尝试读取本地已提取好的元数据（使用缓存）
+        const localMeta = await getMetadata(id, isReady);
+        const filename = mapping[id];
+        const defaultTitle = filename.substring(0, filename.lastIndexOf('.')) || filename;
+        const title = localMeta.title || defaultTitle;
 
         return {
             id,
-            originalName: mapping[id],
+            title,
+            originalName: filename,
             coverUrl: `/api/comics/${id}/page/1`,
-            isReady: index !== null,
+            isReady,
             totalPages: index ? index.length : 0,
             ...localMeta
         };
@@ -110,20 +134,19 @@ app.get('/api/comics/search', async (req, res) => {
 
     const list = await Promise.all(Object.keys(mapping).map(async (id) => {
         const index = await getIndex(id);
+        const isReady = index !== null;
         
-        let localMeta = {};
-        const metaPath = path.join(config.CACHE_LIBRARY_PATH, `comic_${id}`, 'metadata.json');
-        try { 
-            if (await fs.pathExists(metaPath)) {
-                localMeta = await fs.readJson(metaPath); 
-            }
-        } catch (e) {}
+        const localMeta = await getMetadata(id, isReady);
+        const filename = mapping[id];
+        const defaultTitle = filename.substring(0, filename.lastIndexOf('.')) || filename;
+        const title = localMeta.title || defaultTitle;
 
         return {
             id,
-            originalName: mapping[id],
+            title,
+            originalName: filename,
             coverUrl: `/api/comics/${id}/page/1`,
-            isReady: index !== null,
+            isReady,
             totalPages: index ? index.length : 0,
             ...localMeta
         };
@@ -154,23 +177,21 @@ app.get('/api/comics/:id', async (req, res) => {
     }
 
     const index = await getIndex(comicId);
+    const isReady = index !== null;
     
-    // 尝试读取该漫画的专属元数据
-    let localMeta = {};
-    const metaPath = path.join(config.CACHE_LIBRARY_PATH, `comic_${comicId}`, 'metadata.json');
-    try { 
-        if (await fs.pathExists(metaPath)) {
-            localMeta = await fs.readJson(metaPath); 
-        }
-    } catch (e) {}
+    // 尝试读取该漫画的专属元数据（使用缓存）
+    const localMeta = await getMetadata(comicId, isReady);
+    const defaultTitle = filename.substring(0, filename.lastIndexOf('.')) || filename;
+    const title = localMeta.title || defaultTitle;
 
     res.json({
         id: comicId,
+        title,
         originalName: filename,
         coverUrl: `/api/comics/${comicId}/page/1`,
         totalPages: index ? index.length : 0,
-        isReady: index !== null,
-        status: index !== null ? 'ready' : 'processing',
+        isReady,
+        status: isReady ? 'ready' : 'processing',
         ...localMeta
     });
 });
@@ -232,7 +253,30 @@ app.get('/api/comics/:id/page/:pageNumber', async (req, res) => {
             });
     } else {
         // 无缩放要求或参数非法则直出原文件
-        res.sendFile(imagePath);
+        res.sendFile(imagePath, (err) => {
+            if (err) {
+                console.error("[Server] 发送文件失败:", err);
+                if (!res.headersSent) {
+                    res.status(500).json({ error: "读取页面图片失败" });
+                }
+            }
+        });
+    }
+});
+
+/**
+ * 手动触发全库扫描并清除缓存
+ * POST /api/scan
+ */
+app.post('/api/scan', async (req, res) => {
+    try {
+        console.log('[Server] 收到手动扫描请求...');
+        await runActiveScan();
+        clearAllCaches();
+        res.json({ status: 'success', message: '全库扫描完成，缓存已刷新' });
+    } catch (e) {
+        console.error('[Server] 扫描异常:', e);
+        res.status(500).json({ error: '扫描库失败: ' + e.message });
     }
 });
 
@@ -241,7 +285,7 @@ app.listen(PORT, async () => {
     if (config.AUTO_SCAN_ON_STARTUP) {
         console.log('[Server] 正在执行启动自扫...');
         await runActiveScan();
-        // 扫描完成后失效 mapping 缓存，确保新发现的漫画立即可见
-        mappingCache = null;
+        // 扫描完成后失效所有缓存，确保最新数据立即可见
+        clearAllCaches();
     }
 });
