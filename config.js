@@ -1,3 +1,27 @@
+// 全局日志时间戳挂钩：自动为所有 console.log 和 console.error 输出前置本地时间戳
+const originalLog = console.log;
+const originalError = console.error;
+
+function getLogTimestamp() {
+    const now = new Date();
+    const pad = (n) => String(n).padStart(2, '0');
+    const yyyy = now.getFullYear();
+    const mm = pad(now.getMonth() + 1);
+    const dd = pad(now.getDate());
+    const hh = pad(now.getHours());
+    const min = pad(now.getMinutes());
+    const ss = pad(now.getSeconds());
+    return `[${yyyy}-${mm}-${dd} ${hh}:${min}:${ss}]`;
+}
+
+console.log = function(...args) {
+    originalLog.apply(console, [getLogTimestamp(), ...args]);
+};
+
+console.error = function(...args) {
+    originalError.apply(console, [getLogTimestamp(), ...args]);
+};
+
 /**
  * 漫画流媒体后端核心配置
  * 所有选项均可通过同名环境变量覆盖

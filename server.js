@@ -255,6 +255,10 @@ app.get('/api/comics/:id/page/:pageNumber', async (req, res) => {
         // 无缩放要求或参数非法则直出原文件
         res.sendFile(imagePath, (err) => {
             if (err) {
+                // 过滤客户端主动断开连接引起的 ECONNABORTED 错误，避免日志泛滥
+                if (err.code === 'ECONNABORTED' || err.message === 'Request aborted') {
+                    return;
+                }
                 console.error("[Server] 发送文件失败:", err);
                 if (!res.headersSent) {
                     res.status(500).json({ error: "读取页面图片失败" });
