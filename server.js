@@ -9,6 +9,20 @@ import sharp from 'sharp';
 
 const app = express();
 app.use(cors()); // 允许跨域请求，方便 Android 客户端或 Web 端调用
+
+// 请求日志中间件：记录请求类型、路径、状态码、处理耗时、来源 IP 及客户端 User-Agent
+app.use((req, res, next) => {
+    const start = Date.now();
+    const ip = req.headers['x-forwarded-for'] || req.socket.remoteAddress;
+    const userAgent = req.headers['user-agent'] || 'Unknown';
+
+    res.on('finish', () => {
+        const duration = Date.now() - start;
+        console.log(`[Server] ${req.method} ${req.originalUrl} - 状态: ${res.statusCode} (${duration}ms) | 来源: ${ip} | 客户端: ${userAgent}`);
+    });
+    next();
+});
+
 const PORT = config.PORT;
 
 // --- 内存缓存 ---
