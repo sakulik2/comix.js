@@ -282,6 +282,15 @@ app.post('/api/scan', async (req, res) => {
 
 app.listen(PORT, async () => {
     console.log(`[Server] 服务已启动: http://localhost:${PORT}`);
+    
+    // 自动确保目录存在，防止因不存在抛出 ENOENT 错误
+    try {
+        await fs.ensureDir(config.RAW_LIBRARY_PATH);
+        await fs.ensureDir(config.CACHE_LIBRARY_PATH);
+    } catch (e) {
+        console.error('[Server] 初始化目录失败:', e);
+    }
+
     if (config.AUTO_SCAN_ON_STARTUP) {
         console.log('[Server] 正在执行启动自扫...');
         await runActiveScan();

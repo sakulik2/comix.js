@@ -3,11 +3,11 @@
  * 所有选项均可通过同名环境变量覆盖
  */
 export const config = {
-    // 原始漫画存放区 (建议使用绝对路径)
-    RAW_LIBRARY_PATH: process.env.RAW_LIBRARY_PATH || '/library/raw/',
+    // 原始漫画存放区 (默认修改为执行目录下的相对路径，支持通过环境变量覆盖)
+    RAW_LIBRARY_PATH: process.env.RAW_LIBRARY_PATH || './library/raw/',
 
     // 影子缓存存放区
-    CACHE_LIBRARY_PATH: process.env.CACHE_LIBRARY_PATH || '/library/cache/',
+    CACHE_LIBRARY_PATH: process.env.CACHE_LIBRARY_PATH || './library/cache/',
 
     // ID 映射表文件路径 (Docker 部署时建议指向持久化卷内的路径)
     MAPPING_FILE: process.env.MAPPING_FILE || './mapping.json',

@@ -10,6 +10,7 @@ export async function runActiveScan() {
     console.log(`[Scanner] 开始扫描物理库: ${config.RAW_LIBRARY_PATH}`);
     
     try {
+        await fs.ensureDir(config.RAW_LIBRARY_PATH);
         const files = await fs.readdir(config.RAW_LIBRARY_PATH);
         const MAPPING_FILE = config.MAPPING_FILE;
         
