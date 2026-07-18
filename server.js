@@ -10,13 +10,33 @@ import sharp from 'sharp';
 const app = express();
 app.use(cors()); // 允许跨域请求，方便 Android 客户端或 Web 端调用
 
-// 请求日志中间件：记录请求类型、路径、状态码、处理耗时、来源 IP 及客户端 User-Agent
+// 控制页面请求日志频率的内存 Map (Key: IP-comicId, Value: lastLoggedTime)
+const lastPageLogTimeMap = new Map();
+
+// 请求日志中间件：记录请求类型、路径、状态码、处理耗时、来源 IP 及客户端 User-Agent（限频图片页请求）
 app.use((req, res, next) => {
     const start = Date.now();
     const ip = req.headers['x-forwarded-for'] || req.socket.remoteAddress;
     const userAgent = req.headers['user-agent'] || 'Unknown';
 
     res.on('finish', () => {
+        // 如果是高频的页面图片请求，进行频率限制（首包必报，之后每隔 5 分钟限制报一次）
+        if (req.originalUrl.includes('/page/')) {
+            const match = req.originalUrl.match(/\/api\/comics\/([^/]+)\/page/);
+            if (match) {
+                const comicId = match[1];
+                const key = `${ip}-${comicId}`;
+                const now = Date.now();
+                const lastLogged = lastPageLogTimeMap.get(key) || 0;
+                
+                if (now - lastLogged > 5 * 60 * 1000) {
+                    lastPageLogTimeMap.set(key, now);
+                    const duration = Date.now() - start;
+                    console.log(`[Server] ${req.method} ${req.originalUrl} - 状态: ${res.statusCode} (${duration}ms) | 来源: ${ip} | 客户端: ${userAgent} (已进入漫画阅读，后续5分钟该读者此类日志将静默)`);
+                }
+            }
+            return;
+        }
         const duration = Date.now() - start;
         console.log(`[Server] ${req.method} ${req.originalUrl} - 状态: ${res.statusCode} (${duration}ms) | 来源: ${ip} | 客户端: ${userAgent}`);
     });
