@@ -10,6 +10,17 @@ import sharp from 'sharp';
 const app = express();
 app.use(cors()); // 允许跨域请求，方便 Android 客户端或 Web 端调用
 
+// 重写 res.json，强制在返回的 JSON 串末尾追加换行符，以便在 curl 等终端下输出干净的换行
+app.use((req, res, next) => {
+    res.json = function (obj) {
+        res.setHeader('Content-Type', 'application/json');
+        const spaces = app.get('json spaces');
+        const str = JSON.stringify(obj, null, spaces) + '\n';
+        return res.send(str);
+    };
+    next();
+});
+
 // 控制页面请求日志频率的内存 Map (Key: IP-comicId, Value: lastLoggedTime)
 const lastPageLogTimeMap = new Map();
 
