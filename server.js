@@ -1,6 +1,6 @@
-import { config } from './config.js';
+import { config, saveConfig } from './config.js';
 import { runActiveScan } from './scanner.js';
-import { addBookToQueue } from './queueManager.js';
+import { addBookToQueue, queue, pendingTasks } from './queueManager.js';
 import express from 'express';
 import cors from 'cors';
 import fs from 'fs-extra';
@@ -9,6 +9,7 @@ import sharp from 'sharp';
 
 const app = express();
 app.use(cors()); // 允许跨域请求，方便 Android 客户端或 Web 端调用
+app.use(express.json()); // 用于解析控制面板修改配置时的 JSON 载荷
 
 // 重写 res.json，强制在返回的 JSON 串末尾追加换行符，以便在 curl 等终端下输出干净的换行
 app.use((req, res, next) => {
@@ -128,13 +129,20 @@ app.use('/api', (req, res, next) => {
 // --- 路由 ---
 
 /**
- * 根路径状态检查
+ * 根路径：托管控制面板单页 HTML
  */
 app.get('/', (_req, res) => {
+    res.sendFile(path.resolve('dashboard.html'));
+});
+
+/**
+ * 状态检查：搬迁至 /api 路由
+ */
+app.get('/api', (_req, res) => {
     res.json({
         service: "comix.js",
         status: "Running",
-        apiVersion: "1.3.0"
+        apiVersion: "1.4.0"
     });
 });
 
@@ -499,6 +507,78 @@ app.delete('/api/comics/:id', async (req, res) => {
         console.error(`[Server] 删除远程漫画失败:`, e);
         res.status(500).json({ error: `删除失败: ${e.message}` });
     }
+});
+/**
+ * 获取系统当前可调节参数
+ * GET /api/config
+ */
+app.get('/api/config', (req, res) => {
+    res.json({
+        rawLibraryPath: config.RAW_LIBRARY_PATH,
+        cacheLibraryPath: config.CACHE_LIBRARY_PATH,
+        mappingFile: config.MAPPING_FILE,
+        supportedExtensions: config.SUPPORTED_EXTENSIONS,
+        concurrency: config.CONCURRENCY,
+        autoScanOnStartup: config.AUTO_SCAN_ON_STARTUP,
+        optimizeImages: config.OPTIMIZE_IMAGES,
+        optimizeConcurrency: config.OPTIMIZE_CONCURRENCY,
+        optimizeMinFileSize: config.OPTIMIZE_MIN_FILE_SIZE,
+        port: config.PORT,
+        apiKey: config.API_KEY ? '******' : ''
+    });
+});
+
+/**
+ * 保存修改后的配置参数
+ * POST /api/config
+ */
+app.post('/api/config', async (req, res) => {
+    try {
+        const newSettings = req.body;
+        const updatePayload = {};
+        
+        if (newSettings.rawLibraryPath !== undefined) updatePayload.RAW_LIBRARY_PATH = String(newSettings.rawLibraryPath);
+        if (newSettings.cacheLibraryPath !== undefined) updatePayload.CACHE_LIBRARY_PATH = String(newSettings.cacheLibraryPath);
+        if (newSettings.mappingFile !== undefined) updatePayload.MAPPING_FILE = String(newSettings.mappingFile);
+        
+        if (newSettings.supportedExtensions !== undefined && Array.isArray(newSettings.supportedExtensions)) {
+            updatePayload.SUPPORTED_EXTENSIONS = newSettings.supportedExtensions.map(String);
+        }
+        
+        if (newSettings.concurrency !== undefined) updatePayload.CONCURRENCY = parseInt(newSettings.concurrency, 10) || 2;
+        if (newSettings.autoScanOnStartup !== undefined) updatePayload.AUTO_SCAN_ON_STARTUP = !!newSettings.autoScanOnStartup;
+        if (newSettings.optimizeImages !== undefined) updatePayload.OPTIMIZE_IMAGES = !!newSettings.optimizeImages;
+        if (newSettings.optimizeConcurrency !== undefined) updatePayload.OPTIMIZE_CONCURRENCY = parseInt(newSettings.optimizeConcurrency, 10) || 2;
+        if (newSettings.optimizeMinFileSize !== undefined) updatePayload.OPTIMIZE_MIN_FILE_SIZE = parseInt(newSettings.optimizeMinFileSize, 10) || 300 * 1024;
+        if (newSettings.port !== undefined) updatePayload.PORT = parseInt(newSettings.port, 10) || 3000;
+        
+        if (newSettings.apiKey !== undefined && newSettings.apiKey !== '******') {
+            updatePayload.API_KEY = String(newSettings.apiKey);
+        }
+
+        await saveConfig(updatePayload);
+        console.log('[Server] 配置文件已更新并保存至 settings.json:', updatePayload);
+
+        res.json({
+            status: 'success',
+            message: '配置保存成功！部分核心参数（如服务监听端口、存储路径等）需要重新启动服务后生效。'
+        });
+    } catch (e) {
+        console.error('[Server] 保存配置失败:', e);
+        res.status(500).json({ error: '保存配置失败: ' + e.message });
+    }
+});
+
+/**
+ * 获取后台解压队列实时状态
+ * GET /api/queue
+ */
+app.get('/api/queue', (req, res) => {
+    res.json({
+        size: queue.size,
+        pendingCount: queue.pending,
+        pendingTasks: Array.from(pendingTasks)
+    });
 });
 
 app.listen(PORT, async () => {

@@ -43,3 +43,5 @@ export function addBookToQueue(comicId, rawFilePath, cacheBaseDir) {
 
     console.log(`[Queue] 任务已成功加入队列: ${comicId}`);
 }
+
+export { queue, pendingTasks };
