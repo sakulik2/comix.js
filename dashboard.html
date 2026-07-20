@@ -843,6 +843,76 @@
         </div>
     </div>
 
+    <!-- Metadata Editor Modal -->
+    <div id="metadata-modal" class="modal-overlay">
+        <div class="modal" style="max-width: 600px;">
+            <div class="modal-header">编辑漫画元数据</div>
+            <form id="metadata-form" onsubmit="saveMetadata(event)">
+                <input type="hidden" id="meta-comic-id">
+                <div class="modal-body" style="max-height: 70vh; overflow-y: auto;">
+                    <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 12px;">
+                        <div class="gradio-block" style="grid-column: span 2;">
+                            <div class="gradio-label">漫画标题 (Title)</div>
+                            <div class="gradio-input-wrap">
+                                <input type="text" id="meta-title" class="gradio-input" placeholder="输入漫画展示标题">
+                            </div>
+                        </div>
+                        <div class="gradio-block">
+                            <div class="gradio-label">作者 (Authors)</div>
+                            <div class="gradio-input-wrap">
+                                <input type="text" id="meta-authors" class="gradio-input" placeholder="输入漫画作者/画师">
+                            </div>
+                        </div>
+                        <div class="gradio-block">
+                            <div class="gradio-label">分类 (Genres)</div>
+                            <div class="gradio-input-wrap">
+                                <input type="text" id="meta-genres" class="gradio-input" placeholder="输入漫画分类，用逗号分隔">
+                            </div>
+                        </div>
+                        <div class="gradio-block">
+                            <div class="gradio-label">年份 (Year)</div>
+                            <div class="gradio-input-wrap">
+                                <input type="text" id="meta-year" class="gradio-input" placeholder="例如：2023">
+                            </div>
+                        </div>
+                        <div class="gradio-block">
+                            <div class="gradio-label">出版社 (Publisher)</div>
+                            <div class="gradio-input-wrap">
+                                <input type="text" id="meta-publisher" class="gradio-input" placeholder="输入出版商">
+                            </div>
+                        </div>
+                        <div class="gradio-block">
+                            <div class="gradio-label">评分 (Rating，0.0-5.0)</div>
+                            <div class="gradio-input-wrap">
+                                <input type="number" id="meta-rating" class="gradio-input" min="0" max="5" step="0.1" placeholder="评分">
+                            </div>
+                        </div>
+                        <div class="gradio-block">
+                            <div class="gradio-label">连载状态</div>
+                            <div class="gradio-switch-wrap" style="padding: 10px 12px;">
+                                <span style="font-size: 0.9rem;">是否已完结 (Completed)</span>
+                                <label class="switch">
+                                    <input type="checkbox" id="meta-isCompleted">
+                                    <span class="slider"></span>
+                                </label>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="gradio-block">
+                        <div class="gradio-label">漫画简介 (Summary)</div>
+                        <div style="padding: 8px 12px;">
+                            <textarea id="meta-summary" class="gradio-input" style="height: 100px; resize: vertical;" placeholder="输入剧情简介..."></textarea>
+                        </div>
+                    </div>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn" onclick="closeMetadataModal()">取消</button>
+                    <button type="submit" class="btn btn-primary">Save (保存修改)</button>
+                </div>
+            </form>
+        </div>
+    </div>
+
     <!-- Toast container -->
     <div id="toast-container" class="toast-container"></div>
 
@@ -1045,12 +1115,38 @@
                             <span>页数:</span>
                             <span class="meta-val">${comic.totalPages || '0'} P</span>
                         </div>
-                        <div class="comic-meta-row" style="margin-top:auto;">
+                        ${comic.authors ? `
+                        <div class="comic-meta-row">
+                            <span>作者:</span>
+                            <span class="meta-val" title="${comic.authors}">${comic.authors}</span>
+                        </div>` : ''}
+                        ${comic.genres ? `
+                        <div class="comic-meta-row">
+                            <span>分类:</span>
+                            <span class="meta-val" title="${comic.genres}">${comic.genres}</span>
+                        </div>` : ''}
+                        ${comic.year ? `
+                        <div class="comic-meta-row">
+                            <span>年份:</span>
+                            <span class="meta-val">${comic.year}</span>
+                        </div>` : ''}
+                        ${comic.rating ? `
+                        <div class="comic-meta-row">
+                            <span>评分:</span>
+                            <span class="meta-val" style="color: var(--primary);">★ ${parseFloat(comic.rating).toFixed(1)}</span>
+                        </div>` : ''}
+                        ${comic.isCompleted !== undefined ? `
+                        <div class="comic-meta-row">
+                            <span>状态:</span>
+                            <span class="meta-val">${comic.isCompleted ? '已完结' : '连载中'}</span>
+                        </div>` : ''}
+                        <div class="comic-meta-row" style="margin-top:auto; padding-top: 6px;">
                             <span>原始文件:</span>
                             <span class="meta-val" title="${comic.originalName}">${comic.originalName}</span>
                         </div>
                     </div>
                     <div class="card-actions">
+                        <button class="btn-card-reprocess" onclick="openMetadataModal('${comic.id}')">编辑元数据</button>
                         <button class="btn-card-reprocess" onclick="reprocessComic('${comic.id}')">重建缓存</button>
                         <button class="btn-card-delete" onclick="deleteComic('${comic.id}')">删除</button>
                     </div>
@@ -1209,6 +1305,72 @@
                     await fetchConfig();
                 } else {
                     showToast('保存配置失败', 'error');
+                }
+            } catch (e) {
+                showToast('网络错误: ' + e.message, 'error');
+            }
+        }
+
+        function openMetadataModal(comicId) {
+            const comic = comicsData.find(c => c.id === comicId);
+            if (!comic) return;
+
+            document.getElementById('meta-comic-id').value = comicId;
+            document.getElementById('meta-title').value = comic.title || '';
+            document.getElementById('meta-authors').value = comic.authors || '';
+            document.getElementById('meta-genres').value = comic.genres || '';
+            document.getElementById('meta-year').value = comic.year || '';
+            document.getElementById('meta-publisher').value = comic.publisher || '';
+            document.getElementById('meta-rating').value = comic.rating !== undefined && comic.rating !== null ? comic.rating : '';
+            document.getElementById('meta-isCompleted').checked = !!comic.isCompleted;
+            document.getElementById('meta-summary').value = comic.summary || '';
+
+            document.getElementById('metadata-modal').classList.add('active');
+        }
+
+        function closeMetadataModal() {
+            document.getElementById('metadata-modal').classList.remove('active');
+        }
+
+        async function saveMetadata(event) {
+            event.preventDefault();
+            const comicId = document.getElementById('meta-comic-id').value;
+            const title = document.getElementById('meta-title').value;
+            const authors = document.getElementById('meta-authors').value;
+            const genres = document.getElementById('meta-genres').value;
+            const year = document.getElementById('meta-year').value;
+            const publisher = document.getElementById('meta-publisher').value;
+            const rating = document.getElementById('meta-rating').value;
+            const isCompleted = document.getElementById('meta-isCompleted').checked;
+            const summary = document.getElementById('meta-summary').value;
+
+            const body = {
+                title,
+                authors,
+                genres,
+                year,
+                publisher,
+                rating: rating !== '' ? parseFloat(rating) : null,
+                isCompleted,
+                summary
+            };
+
+            showToast('正在保存元数据...', 'success');
+            try {
+                const response = await fetch(`/api/comics/${comicId}/metadata`, {
+                    method: 'POST',
+                    headers: getHeaders(),
+                    body: JSON.stringify(body)
+                });
+                if (handleApiError(response)) return;
+
+                if (response.ok) {
+                    const data = await response.json();
+                    showToast(data.message || '元数据保存成功！');
+                    closeMetadataModal();
+                    await fetchComics();
+                } else {
+                    showToast('保存元数据失败', 'error');
                 }
             } catch (e) {
                 showToast('网络错误: ' + e.message, 'error');

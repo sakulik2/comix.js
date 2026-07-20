@@ -508,6 +508,67 @@ app.delete('/api/comics/:id', async (req, res) => {
         res.status(500).json({ error: `删除失败: ${e.message}` });
     }
 });
+
+/**
+ * 修改并保存指定漫画的元数据
+ * POST /api/comics/:id/metadata
+ */
+app.post('/api/comics/:id/metadata', async (req, res) => {
+    const comicId = req.params.id;
+    const mapping = await getMapping();
+
+    let actualId = comicId;
+    let filename = mapping[actualId];
+
+    if (!filename && /^\d+$/.test(comicId)) {
+        const keys = Object.keys(mapping);
+        const index = parseInt(comicId, 10) - 1;
+        if (index >= 0 && index < keys.length) {
+            actualId = keys[index];
+            filename = mapping[actualId];
+        }
+    }
+
+    if (!filename) {
+        return res.status(404).json({ error: '未找到该 ID 映射' });
+    }
+
+    const cacheDir = path.join(config.CACHE_LIBRARY_PATH, `comic_${actualId}`);
+    try {
+        await fs.ensureDir(cacheDir);
+        const metaPath = path.join(cacheDir, 'metadata.json');
+        
+        let existingMeta = {};
+        if (await fs.pathExists(metaPath)) {
+            try {
+                existingMeta = await fs.readJson(metaPath);
+            } catch (e) {}
+        }
+
+        const newMeta = req.body;
+        const updatedMeta = {
+            ...existingMeta,
+            title: newMeta.title !== undefined ? String(newMeta.title) : (existingMeta.title || filename.substring(0, filename.lastIndexOf('.')) || filename),
+            authors: newMeta.authors !== undefined ? String(newMeta.authors) : (existingMeta.authors || ''),
+            summary: newMeta.summary !== undefined ? String(newMeta.summary) : (existingMeta.summary || ''),
+            genres: newMeta.genres !== undefined ? String(newMeta.genres) : (existingMeta.genres || ''),
+            publisher: newMeta.publisher !== undefined ? String(newMeta.publisher) : (existingMeta.publisher || ''),
+            year: newMeta.year !== undefined ? String(newMeta.year) : (existingMeta.year || ''),
+            rating: newMeta.rating !== undefined ? parseFloat(newMeta.rating) : (existingMeta.rating || null),
+            isCompleted: newMeta.isCompleted !== undefined ? !!newMeta.isCompleted : (existingMeta.isCompleted || false)
+        };
+
+        await fs.writeJson(metaPath, updatedMeta, { spaces: 2 });
+        metadataCache.delete(actualId);
+
+        console.log(`[Server] 漫画 ${filename} (ID: ${actualId}) 元数据已保存并更新:`, updatedMeta);
+        res.json({ status: 'success', message: '元数据保存成功！', metadata: updatedMeta });
+    } catch (e) {
+        console.error(`[Server] 保存漫画 ${actualId} 元数据失败:`, e);
+        res.status(500).json({ error: '保存元数据失败: ' + e.message });
+    }
+});
+
 /**
  * 获取系统当前可调节参数
  * GET /api/config
