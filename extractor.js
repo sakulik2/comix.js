@@ -3,6 +3,8 @@ import { promisify } from 'util';
 import fs from 'fs-extra';
 import path from 'path';
 import sharp from 'sharp';
+import PQueue from 'p-queue';
+import { config } from './config.js';
 
 const execAsync = promisify(exec);
 
@@ -29,8 +31,12 @@ export async function extractComic(rawFilePath, cacheDir) {
             throw new Error(`不支持的文件格式: ${ext}`);
         }
 
-        // 统一后处理：优化图片 (缩放 + 转码 WebP)
-        await optimizeImages(cacheDir);
+        // 根据配置进行图片处理：转码优化或轻量化整理
+        if (config.OPTIMIZE_IMAGES) {
+            await optimizeImages(cacheDir);
+        } else {
+            await flattenAndCleanDirectory(cacheDir);
+        }
 
         // 统一后处理：自然排序并生成索引
         await generateIndex(cacheDir);
@@ -73,7 +79,7 @@ async function extractPDF(source, target) {
 }
 
 /**
- * 图像优化处理：递归扫描目录，将所有图片缩放并转为 WebP
+ * 图像优化处理：根据并发限制与大小阈值进行受控 WebP 转码，免去小文件和已优化 WebP 的转码压力
  */
 async function optimizeImages(cacheDir) {
     // 递归获取所有文件
@@ -93,35 +99,121 @@ async function optimizeImages(cacheDir) {
     const allFiles = await getAllFiles(cacheDir);
     const imageExtensions = ['.jpg', '.jpeg', '.png', '.bmp', '.gif', '.webp'];
 
-    console.log(`[Extractor] 开始递归优化, 发现总文件数: ${allFiles.length}`);
+    console.log(`[Extractor] 开始递归优化 (已启用限制并发的 WebP 转码), 发现总文件数: ${allFiles.length}`);
 
-    const optimizePromises = allFiles.map(async (filePath) => {
-        const ext = path.extname(filePath).toLowerCase();
-        if (!imageExtensions.includes(ext)) return;
+    // 使用 PQueue 控制并发，避免大量 sharp 实例同时运行时引发 OOM 和 CPU 瞬间占满
+    const optimizeQueue = new PQueue({ concurrency: config.OPTIMIZE_CONCURRENCY });
 
-        // 如果已经是 webp 且在根目录，跳过
-        if (ext === '.webp' && path.dirname(filePath) === cacheDir) return;
+    const optimizePromises = allFiles.map((filePath) => {
+        return optimizeQueue.add(async () => {
+            const ext = path.extname(filePath).toLowerCase();
 
-        // 统一输出到 cacheDir 根目录，平铺文件
-        const fileName = path.basename(filePath, ext);
-        const outputPath = path.join(cacheDir, `${fileName}.webp`);
+            // 1. 如果是非图片文件，直接删除
+            if (!imageExtensions.includes(ext)) {
+                await fs.remove(filePath);
+                return;
+            }
 
-        try {
-            await sharp(filePath)
-                // 移除硬编码的分辨率缩放，保留全尺寸原图精度，动态缩放交给 /page 路由
-                .webp({ quality: 85 })
-                .toFile(outputPath);
+            const fileName = path.basename(filePath, ext);
+            const outputPath = path.join(cacheDir, `${fileName}.webp`);
 
-            // 处理完成后删除原文件
-            await fs.remove(filePath);
-        } catch (err) {
-            console.error(`[Extractor] 优化图片失败: ${filePath}`, err);
-        }
+            // 2. 如果已经是 WebP 格式，无需任何额外转码，直接移动到根目录
+            if (ext === '.webp') {
+                if (path.dirname(filePath) !== cacheDir) {
+                    if (!(await fs.pathExists(outputPath))) {
+                        await fs.move(filePath, outputPath);
+                    } else {
+                        await fs.remove(filePath);
+                    }
+                }
+                return;
+            }
+
+            // 3. 性能优化源头：根据文件体积大小进行转码初筛
+            // 如果文件小于过滤阈值 (如 300KB)，转码收益极低，直接将其原格式移动并平铺到根目录，跳过 sharp 转码
+            const stat = await fs.stat(filePath);
+            if (stat.size < config.OPTIMIZE_MIN_FILE_SIZE) {
+                const originalNameOutputPath = path.join(cacheDir, `${fileName}${ext}`);
+                if (filePath !== originalNameOutputPath) {
+                    if (!(await fs.pathExists(originalNameOutputPath))) {
+                        await fs.move(filePath, originalNameOutputPath);
+                    } else {
+                        await fs.remove(filePath);
+                    }
+                }
+                return;
+            }
+
+            // 4. 对满足条件的大图运行 sharp 优化转码
+            try {
+                await sharp(filePath)
+                    .webp({ quality: 85 })
+                    .toFile(outputPath);
+
+                // 处理完成后删除原文件
+                await fs.remove(filePath);
+            } catch (err) {
+                console.error(`[Extractor] 优化图片失败: ${filePath}`, err);
+            }
+        });
     });
 
     await Promise.all(optimizePromises);
 
-    // 清理可能存在的空子目录
+    // 清理所有子目录
+    const items = await fs.readdir(cacheDir);
+    for (const item of items) {
+        const fullPath = path.join(cacheDir, item);
+        if ((await fs.stat(fullPath)).isDirectory()) {
+            await fs.remove(fullPath);
+        }
+    }
+}
+
+/**
+ * 轻量化平铺与清理：完全跳过 WebP 转码，仅将所有图片平铺移动至缓存根目录，并清除垃圾文件
+ */
+async function flattenAndCleanDirectory(cacheDir) {
+    const getAllFiles = async (dir, allFiles = []) => {
+        const files = await fs.readdir(dir);
+        for (const file of files) {
+            const name = path.join(dir, file);
+            if ((await fs.stat(name)).isDirectory()) {
+                await getAllFiles(name, allFiles);
+            } else {
+                allFiles.push(name);
+            }
+        }
+        return allFiles;
+    };
+
+    const allFiles = await getAllFiles(cacheDir);
+    const imageExtensions = ['.jpg', '.jpeg', '.png', '.bmp', '.gif', '.webp'];
+
+    console.log(`[Extractor] 开始轻量化文件扫描与平铺 (完全跳过 WebP 转码), 文件总数: ${allFiles.length}`);
+
+    for (const filePath of allFiles) {
+        const ext = path.extname(filePath).toLowerCase();
+
+        // 1. 如果是非图片且非 xml/json 元数据，直接删除
+        if (!imageExtensions.includes(ext) && ext !== '.xml' && ext !== '.json') {
+            await fs.remove(filePath);
+            continue;
+        }
+
+        // 2. 如果文件在子目录中，直接移动到缓存目录根部以平铺
+        if (path.dirname(filePath) !== cacheDir) {
+            const fileName = path.basename(filePath);
+            const outputPath = path.join(cacheDir, fileName);
+            if (!(await fs.pathExists(outputPath))) {
+                await fs.move(filePath, outputPath);
+            } else {
+                await fs.remove(filePath);
+            }
+        }
+    }
+
+    // 3. 清除所有空的子目录
     const items = await fs.readdir(cacheDir);
     for (const item of items) {
         const fullPath = path.join(cacheDir, item);
@@ -186,8 +278,9 @@ async function generateIndex(cacheDir) {
 
     const files = await fs.readdir(cacheDir);
 
-    // 此时目录下应该全是平铺在根部的 .webp
-    const imageFiles = files.filter(file => path.extname(file).toLowerCase() === '.webp');
+    // 目录支持混杂多种格式的图片
+    const imageExtensions = ['.jpg', '.jpeg', '.png', '.bmp', '.gif', '.webp'];
+    const imageFiles = files.filter(file => imageExtensions.includes(path.extname(file).toLowerCase()));
 
     const collator = new Intl.Collator(undefined, {
         numeric: true,
@@ -199,5 +292,5 @@ async function generateIndex(cacheDir) {
     const indexPath = path.join(cacheDir, 'index.json');
     await fs.writeJson(indexPath, imageFiles, { spaces: 2 });
 
-    console.log(`[Extractor] 索引生成成功: ${imageFiles.length} 页 (已平铺并转码为 WebP)`);
+    console.log(`[Extractor] 索引生成成功: ${imageFiles.length} 页 (已平铺，混杂格式排序)`);
 }

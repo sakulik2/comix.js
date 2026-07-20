@@ -39,7 +39,7 @@ app.use((req, res, next) => {
                 const key = `${ip}-${comicId}`;
                 const now = Date.now();
                 const lastLogged = lastPageLogTimeMap.get(key) || 0;
-                
+
                 if (now - lastLogged > 5 * 60 * 1000) {
                     lastPageLogTimeMap.set(key, now);
                     const duration = Date.now() - start;
@@ -98,7 +98,7 @@ async function getMetadata(comicId, isReady) {
             }
             return meta;
         }
-    } catch (e) {}
+    } catch (e) { }
     return {};
 }
 
@@ -112,12 +112,12 @@ function clearAllCaches() {
 // 拦截所有以 /api 开头的请求
 app.use('/api', (req, res, next) => {
     if (req.method === 'OPTIONS') return next(); // 放行 CORS 预检
-    
+
     if (!config.API_KEY || config.API_KEY === '') return next(); // 未配置则不设防
 
     // 优先读取 HTTP Header，兼容 Query string 方式 (便于某些极简客户端或直链请求)
     const clientToken = req.headers['x-comix-token'] || req.query.token;
-    
+
     if (clientToken === config.API_KEY) {
         next();
     } else {
@@ -132,9 +132,9 @@ app.use('/api', (req, res, next) => {
  */
 app.get('/', (_req, res) => {
     res.json({
-        service: "Sakulik Comix Streaming Service",
+        service: "comix.js",
         status: "Running",
-        apiVersion: "1.2.0 (Metadata Enhanced)"
+        apiVersion: "1.3.0"
     });
 });
 
@@ -149,7 +149,7 @@ app.get('/api/comics', async (_req, res) => {
     const list = await Promise.all(keys.map(async (id) => {
         const index = await getIndex(id);
         const isReady = index !== null;
-        
+
         // 尝试读取本地已提取好的元数据（使用缓存）
         const localMeta = await getMetadata(id, isReady);
         const filename = mapping[id];
@@ -184,7 +184,7 @@ app.get('/api/comics/search', async (req, res) => {
     const list = await Promise.all(keys.map(async (id) => {
         const index = await getIndex(id);
         const isReady = index !== null;
-        
+
         const localMeta = await getMetadata(id, isReady);
         const filename = mapping[id];
         const defaultTitle = filename.substring(0, filename.lastIndexOf('.')) || filename;
@@ -241,7 +241,7 @@ app.get('/api/comics/:id', async (req, res) => {
 
     const index = await getIndex(actualId);
     const isReady = index !== null;
-    
+
     // 尝试读取该漫画的专属元数据（使用缓存）
     const localMeta = await getMetadata(actualId, isReady);
     const defaultTitle = filename.substring(0, filename.lastIndexOf('.')) || filename;
@@ -309,13 +309,13 @@ app.get('/api/comics/:id/page/:pageNumber', async (req, res) => {
     }
 
     const imagePath = path.resolve(config.CACHE_LIBRARY_PATH, `comic_${actualId}`, imageFile);
-    
+
     // 支持按需缩放，利用 sharp 将内存计算压力下放到请求时，解约磁盘空间
     const targetWidth = parseInt(req.query.width, 10);
-    
+
     // 追加 HTTP 缓存强控制，减轻服务端压力
     res.setHeader('Cache-Control', 'public, max-age=604800, immutable'); // 强制缓存 1 星期
-    
+
     if (!isNaN(targetWidth) && targetWidth > 0 && targetWidth < 4000) {
         res.type('image/webp');
         // 将源图片通过 sharp 管道流式吐给客户端，不产生临时文件
@@ -357,6 +357,94 @@ app.post('/api/scan', async (req, res) => {
     } catch (e) {
         console.error('[Server] 扫描异常:', e);
         res.status(500).json({ error: '扫描库失败: ' + e.message });
+    }
+});
+
+/**
+ * 触发所有已映射漫画的缓存重建 (重处理)
+ * POST /api/comics/reprocess
+ */
+app.post('/api/comics/reprocess', async (req, res) => {
+    try {
+        console.log('[Server] 收到全库重建缓存请求...');
+        const mapping = await getMapping();
+        const keys = Object.keys(mapping);
+        let count = 0;
+
+        for (const id of keys) {
+            const filename = mapping[id];
+            const cacheDir = path.join(config.CACHE_LIBRARY_PATH, `comic_${id}`);
+            if (await fs.pathExists(cacheDir)) {
+                await fs.remove(cacheDir);
+            }
+
+            // 清除内存缓存
+            indexCache.delete(id);
+            metadataCache.delete(id);
+
+            const rawFilePath = path.join(config.RAW_LIBRARY_PATH, filename);
+            if (await fs.pathExists(rawFilePath)) {
+                addBookToQueue(id, rawFilePath, config.CACHE_LIBRARY_PATH);
+                count++;
+            }
+        }
+
+        console.log(`[Server] 已触发全库 ${count} 本漫画的缓存重建`);
+        res.json({ status: 'success', message: `已清空全库共计 ${count} 本漫画的缓存，并已全部重新推入后台解压队列` });
+    } catch (e) {
+        console.error('[Server] 全库缓存重建失败:', e);
+        res.status(500).json({ error: '全库缓存重建失败: ' + e.message });
+    }
+});
+
+/**
+ * 触发指定漫画的缓存重建 (重处理)
+ * POST /api/comics/:id/reprocess
+ */
+app.post('/api/comics/:id/reprocess', async (req, res) => {
+    const comicId = req.params.id;
+    const mapping = await getMapping();
+
+    let actualId = comicId;
+    let filename = mapping[actualId];
+
+    // 如果输入的是数字 ID，根据 1-based 索引解析出真实的 MD5 ID
+    if (!filename && /^\d+$/.test(comicId)) {
+        const keys = Object.keys(mapping);
+        const index = parseInt(comicId, 10) - 1;
+        if (index >= 0 && index < keys.length) {
+            actualId = keys[index];
+            filename = mapping[actualId];
+        }
+    }
+
+    if (!filename) {
+        return res.status(404).json({ error: '未找到该 ID 映射' });
+    }
+
+    try {
+        console.log(`[Server] 收到漫画缓存重建请求: ${filename} (ID: ${actualId})...`);
+        const cacheDir = path.join(config.CACHE_LIBRARY_PATH, `comic_${actualId}`);
+        if (await fs.pathExists(cacheDir)) {
+            await fs.remove(cacheDir);
+        }
+
+        // 清除内存缓存
+        indexCache.delete(actualId);
+        metadataCache.delete(actualId);
+
+        const rawFilePath = path.join(config.RAW_LIBRARY_PATH, filename);
+        if (!(await fs.pathExists(rawFilePath))) {
+            return res.status(404).json({ error: '物理文件不存在，无法重建缓存' });
+        }
+
+        addBookToQueue(actualId, rawFilePath, config.CACHE_LIBRARY_PATH);
+
+        console.log(`[Server] 已成功触发漫画重建并入队: ${filename} (ID: ${actualId})`);
+        res.json({ status: 'success', message: `漫画 ${filename} 的缓存已成功清空并重新推入解压队列` });
+    } catch (e) {
+        console.error(`[Server] 重建漫画 [${actualId}] 缓存失败:`, e);
+        res.status(500).json({ error: '重建缓存失败: ' + e.message });
     }
 });
 
@@ -415,7 +503,7 @@ app.delete('/api/comics/:id', async (req, res) => {
 
 app.listen(PORT, async () => {
     console.log(`[Server] 服务已启动: http://localhost:${PORT}`);
-    
+
     // 自动确保目录存在，防止因不存在抛出 ENOENT 错误
     try {
         await fs.ensureDir(config.RAW_LIBRARY_PATH);

@@ -70,10 +70,108 @@ export async function runActiveScan() {
     }
 }
 
-// 支持 CLI 手动调用支持： node scanner.js --run
-if (process.argv.includes('--run')) {
-    runActiveScan().then(() => {
-        console.log('[Scanner] 手动扫描脚本执行完毕。由于队列可能仍在后台解压，进程将维持运行状态，直至任务清空。');
-        // 注意：PQueue 为后台运行，无需立即退出进程
-    });
+// 支持 CLI 手动调用支持： node scanner.js --run / --reprocess / --reprocess-all
+async function handleCli() {
+    const args = process.argv;
+    
+    if (args.includes('--reprocess') || args.includes('--reprocess-all')) {
+        let mapping = {};
+        try {
+            mapping = await fs.readJson(config.MAPPING_FILE);
+        } catch (e) {}
+
+        const PORT = config.PORT || 3000;
+        const API_KEY = config.API_KEY || '';
+        const headers = {};
+        if (API_KEY) {
+            headers['x-comix-token'] = API_KEY;
+        }
+
+        if (args.includes('--reprocess-all')) {
+            console.log('[Scanner] CLI: 尝试发送全库缓存重建请求...');
+            try {
+                const response = await fetch(`http://127.0.0.1:${PORT}/api/comics/reprocess`, {
+                    method: 'POST',
+                    headers
+                });
+                if (response.ok) {
+                    const data = await response.json();
+                    console.log(`🎉 [Scanner] 远程触发全库重建成功: ${data.message}`);
+                    process.exit(0);
+                }
+            } catch (e) {
+                console.log(`[Scanner] 无法连接到服务，将回落至本地清理模式。原因: ${e.message}`);
+            }
+
+            // 本地回落模式
+            console.log('[Scanner] 本地模式: 正在清除全库已缓存的数据...');
+            const keys = Object.keys(mapping);
+            for (const id of keys) {
+                const cacheDir = path.join(config.CACHE_LIBRARY_PATH, `comic_${id}`);
+                if (await fs.pathExists(cacheDir)) {
+                    await fs.remove(cacheDir);
+                }
+            }
+            console.log('[Scanner] 本地模式: 缓存已清除，开始执行重新解压与扫描...');
+            await runActiveScan();
+            console.log('[Scanner] 本地模式: 重建解压队列已排满。由于后台队列可能仍在解压，进程维持运行。');
+        } 
+        else {
+            const idx = args.indexOf('--reprocess');
+            const target = args[idx + 1];
+            if (!target) {
+                console.error('用法: node scanner.js --reprocess <漫画ID/书架编号>');
+                process.exit(1);
+            }
+
+            let actualId = target;
+            let filename = mapping[actualId];
+
+            if (!filename && /^\d+$/.test(target)) {
+                const keys = Object.keys(mapping);
+                const numIndex = parseInt(target, 10) - 1;
+                if (numIndex >= 0 && numIndex < keys.length) {
+                    actualId = keys[numIndex];
+                    filename = mapping[actualId];
+                }
+            }
+
+            if (!filename) {
+                console.error(`[Scanner] 错误: 未找到对应的漫画 ID 或书架编号: ${target}`);
+                process.exit(1);
+            }
+
+            console.log(`[Scanner] CLI: 尝试发送漫画缓存重建请求 (ID: ${actualId})...`);
+            try {
+                const response = await fetch(`http://127.0.0.1:${PORT}/api/comics/${actualId}/reprocess`, {
+                    method: 'POST',
+                    headers
+                });
+                if (response.ok) {
+                    const data = await response.json();
+                    console.log(`🎉 [Scanner] 远程触发漫画重建成功: ${data.message}`);
+                    process.exit(0);
+                }
+            } catch (e) {
+                console.log(`[Scanner] 无法连接到服务，将回落至本地清理模式。原因: ${e.message}`);
+            }
+
+            // 本地回落模式
+            console.log(`[Scanner] 本地模式: 正在清除漫画 ${filename} (ID: ${actualId}) 的缓存...`);
+            const cacheDir = path.join(config.CACHE_LIBRARY_PATH, `comic_${actualId}`);
+            if (await fs.pathExists(cacheDir)) {
+                await fs.remove(cacheDir);
+            }
+            console.log('[Scanner] 本地模式: 缓存已清除，开始执行扫描并重新入队解压...');
+            await runActiveScan();
+            console.log('[Scanner] 本地模式: 重建解压队列已排满。由于后台队列可能仍在解压，进程维持运行。');
+        }
+    } 
+    else if (args.includes('--run')) {
+        runActiveScan().then(() => {
+            console.log('[Scanner] 手动扫描脚本执行完毕。由于队列可能仍在后台解压，进程将维持运行状态，直至任务清空。');
+        });
+    }
 }
+
+handleCli();
