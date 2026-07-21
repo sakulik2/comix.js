@@ -704,6 +704,20 @@
                 <div class="btn-group">
                     <button class="btn btn-primary" onclick="triggerScan()">一键扫描新漫画</button>
                     <button class="btn btn-danger" onclick="triggerReprocessAll()">重建全库缓存</button>
+                    <button class="btn" style="background-color: var(--success); color: white;" onclick="document.getElementById('upload-input').click()">上传本地漫画</button>
+                    <input type="file" id="upload-input" style="display: none;" accept=".zip,.cbz,.rar,.cbr,.pdf" onchange="handleFileUpload(this)">
+                </div>
+            </div>
+
+            <!-- Upload progress bar container -->
+            <div id="upload-progress-container" class="gradio-block" style="display: none; margin-bottom: 20px; padding: 16px;">
+                <div class="gradio-label" style="border-bottom: none; padding: 0 0 8px 0; margin-bottom: 8px;">文件上传进度 (File Upload Progress)</div>
+                <div style="display: flex; justify-content: space-between; font-size: 0.85rem; margin-bottom: 6px; color: var(--text-main);">
+                    <span id="upload-filename-text" style="font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 80%;">正在上传: </span>
+                    <span id="upload-percent-text" style="font-weight: bold; color: var(--success);">0%</span>
+                </div>
+                <div style="width: 100%; height: 8px; background-color: var(--border-color); border-radius: 4px; overflow: hidden;">
+                    <div id="upload-progress-bar" style="width: 0%; height: 100%; background-color: var(--success); transition: width 0.1s; border-radius: 4px;"></div>
                 </div>
             </div>
 
@@ -1258,6 +1272,79 @@
             } catch (e) {
                 showToast('网络错误: ' + e.message, 'error');
             }
+        }
+
+        // POST /api/upload
+        function handleFileUpload(input) {
+            const file = input.files[0];
+            if (!file) return;
+
+            // 只允许 zip, cbz, rar, cbr, pdf
+            const ext = file.name.substring(file.name.lastIndexOf('.')).toLowerCase();
+            if (!['.zip', '.cbz', '.rar', '.cbr', '.pdf'].includes(ext)) {
+                showToast('仅支持 zip, cbz, rar, cbr, pdf 格式的文件', 'error');
+                input.value = '';
+                return;
+            }
+
+            const container = document.getElementById('upload-progress-container');
+            const filenameText = document.getElementById('upload-filename-text');
+            const percentText = document.getElementById('upload-percent-text');
+            const progressBar = document.getElementById('upload-progress-bar');
+
+            container.style.display = 'block';
+            filenameText.textContent = `正在上传: ${file.name}`;
+            percentText.textContent = '0%';
+            progressBar.style.width = '0%';
+
+            const xhr = new XMLHttpRequest();
+            xhr.open('POST', `/api/upload?filename=${encodeURIComponent(file.name)}`, true);
+            
+            // 如果配置了 API Token
+            const token = localStorage.getItem('comix_token');
+            if (token) {
+                xhr.setRequestHeader('x-comix-token', token);
+            }
+
+            xhr.upload.onprogress = function(e) {
+                if (e.lengthComputable) {
+                    const percent = Math.round((e.loaded / e.total) * 100);
+                    percentText.textContent = `${percent}%`;
+                    progressBar.style.width = `${percent}%`;
+                }
+            };
+
+            xhr.onload = function() {
+                container.style.display = 'none';
+                input.value = ''; // 清空选择
+                if (xhr.status === 200) {
+                    try {
+                        const res = JSON.parse(xhr.responseText);
+                        showToast(`🎉 ${res.message || '文件上传成功'}`, 'success');
+                        // 自动刷新书架与队列
+                        fetchQueueStatus();
+                        fetchComics();
+                    } catch(e) {
+                        showToast('上传成功，但解析响应失败', 'success');
+                        fetchComics();
+                    }
+                } else {
+                    try {
+                        const err = JSON.parse(xhr.responseText);
+                        showToast(`❌ 上传失败: ${err.error}`, 'error');
+                    } catch(e) {
+                        showToast(`❌ 上传失败，状态码: ${xhr.status}`, 'error');
+                    }
+                }
+            };
+
+            xhr.onerror = function() {
+                container.style.display = 'none';
+                input.value = '';
+                showToast('❌ 网络错误，上传中断', 'error');
+            };
+
+            xhr.send(file);
         }
 
         // POST /api/config

@@ -6,6 +6,7 @@ import cors from 'cors';
 import fs from 'fs-extra';
 import path from 'path';
 import sharp from 'sharp';
+import crypto from 'crypto';
 
 const app = express();
 app.use(cors()); // 允许跨域请求，方便 Android 客户端或 Web 端调用
@@ -640,6 +641,92 @@ app.get('/api/queue', (req, res) => {
         pendingCount: queue.pending,
         pendingTasks: Array.from(pendingTasks)
     });
+});
+
+/**
+ * 简易文件上传接口
+ * POST /api/upload?filename=xxx
+ * 请求体为漫画文件的原始二进制流 (Content-Type: application/octet-stream)
+ */
+app.post('/api/upload', async (req, res) => {
+    // 校验 Token（如果配置了 API_KEY）
+    if (config.API_KEY) {
+        const token = req.headers['x-comix-token'];
+        if (token !== config.API_KEY) {
+            return res.status(401).json({ error: 'Unauthorized: Invalid token' });
+        }
+    }
+
+    const filename = req.query.filename;
+    if (!filename) {
+        return res.status(400).json({ error: '缺少 filename 参数，请在 URL 中提供 ?filename=xxx' });
+    }
+
+    // 只允许常见的漫画压缩包或 PDF 格式
+    const ext = path.extname(filename).toLowerCase();
+    if (!['.zip', '.cbz', '.rar', '.cbr', '.pdf'].includes(ext)) {
+        return res.status(400).json({ error: '不支持的文件类型，仅限 zip, cbz, rar, cbr, pdf' });
+    }
+
+    const targetPath = path.join(config.RAW_LIBRARY_PATH, filename);
+    
+    // 确保 RAW_LIBRARY_PATH 存在
+    await fs.ensureDir(config.RAW_LIBRARY_PATH);
+
+    // 如果文件已存在，为防止覆盖，重命名文件 (如 file(1).cbz)
+    let finalPath = targetPath;
+    let finalFilename = filename;
+    let counter = 1;
+    while (await fs.pathExists(finalPath)) {
+        const base = path.basename(filename, ext);
+        finalFilename = `${base}(${counter})${ext}`;
+        finalPath = path.join(config.RAW_LIBRARY_PATH, finalFilename);
+        counter++;
+    }
+
+    try {
+        console.log(`[Server] 开始接收上传文件: ${finalFilename}...`);
+        const writeStream = fs.createWriteStream(finalPath);
+        
+        req.pipe(writeStream);
+
+        await new Promise((resolve, reject) => {
+            writeStream.on('finish', resolve);
+            req.on('error', reject);
+            writeStream.on('error', reject);
+        });
+
+        console.log(`[Server] 文件上传并保存成功: ${finalFilename}`);
+
+        // 为该书文件名计算 MD5 作为唯一 ID
+        const fileMd5 = crypto.createHash('md5').update(finalFilename).digest('hex');
+        
+        // 更新 mapping.json
+        const mapping = await getMapping();
+        mapping[fileMd5] = finalFilename;
+        await fs.writeJson(config.MAPPING_FILE, mapping, { spaces: 2 });
+
+        // 清空映射内存缓存
+        mappingCache = null;
+
+        // 加入后台解压解密优化队列
+        addBookToQueue(fileMd5, finalPath, config.CACHE_LIBRARY_PATH);
+
+        res.json({
+            status: 'success',
+            message: `文件 ${finalFilename} 上传成功，并已推入后台处理队列`,
+            id: fileMd5
+        });
+    } catch (err) {
+        console.error('[Server] 上传保存失败:', err);
+        // 如果出错，清理未写完的文件
+        try {
+            if (await fs.pathExists(finalPath)) {
+                await fs.remove(finalPath);
+            }
+        } catch (e) {}
+        res.status(500).json({ error: '上传保存失败: ' + err.message });
+    }
 });
 
 app.listen(PORT, async () => {
