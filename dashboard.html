@@ -690,8 +690,8 @@
 
         <!-- Navigation Tabs -->
         <nav class="tabs">
-            <button class="tab-btn active" onclick="switchTab('bookshelf')">漫画书架 (Bookshelf)</button>
-            <button class="tab-btn" onclick="switchTab('settings')">系统设置 (Settings)</button>
+            <button class="tab-btn active" onclick="switchTab('bookshelf')">漫画书架</button>
+            <button class="tab-btn" onclick="switchTab('settings')">系统设置</button>
         </nav>
 
         <!-- Tab 1: Bookshelf View -->
@@ -704,20 +704,30 @@
                 <div class="btn-group">
                     <button class="btn btn-primary" onclick="triggerScan()">一键扫描新漫画</button>
                     <button class="btn btn-danger" onclick="triggerReprocessAll()">重建全库缓存</button>
-                    <button class="btn" style="background-color: var(--success); color: white;" onclick="document.getElementById('upload-input').click()">上传本地漫画</button>
-                    <input type="file" id="upload-input" style="display: none;" accept=".zip,.cbz,.rar,.cbr,.pdf" onchange="handleFileUpload(this)">
+                    <button class="btn" style="background-color: var(--success); color: white;"
+                        onclick="document.getElementById('upload-input').click()">上传本地漫画</button>
+                    <input type="file" id="upload-input" style="display: none;" accept=".zip,.cbz,.rar,.cbr,.pdf"
+                        onchange="handleFileUpload(this)">
                 </div>
             </div>
 
             <!-- Upload progress bar container -->
-            <div id="upload-progress-container" class="gradio-block" style="display: none; margin-bottom: 20px; padding: 16px;">
-                <div class="gradio-label" style="border-bottom: none; padding: 0 0 8px 0; margin-bottom: 8px;">文件上传进度 (File Upload Progress)</div>
-                <div style="display: flex; justify-content: space-between; font-size: 0.85rem; margin-bottom: 6px; color: var(--text-main);">
-                    <span id="upload-filename-text" style="font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 80%;">正在上传: </span>
+            <div id="upload-progress-container" class="gradio-block"
+                style="display: none; margin-bottom: 20px; padding: 16px;">
+                <div class="gradio-label" style="border-bottom: none; padding: 0 0 8px 0; margin-bottom: 8px;">文件上传进度
+                    (File Upload Progress)</div>
+                <div
+                    style="display: flex; justify-content: space-between; font-size: 0.85rem; margin-bottom: 6px; color: var(--text-main);">
+                    <span id="upload-filename-text"
+                        style="font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 80%;">正在上传:
+                    </span>
                     <span id="upload-percent-text" style="font-weight: bold; color: var(--success);">0%</span>
                 </div>
-                <div style="width: 100%; height: 8px; background-color: var(--border-color); border-radius: 4px; overflow: hidden;">
-                    <div id="upload-progress-bar" style="width: 0%; height: 100%; background-color: var(--success); transition: width 0.1s; border-radius: 4px;"></div>
+                <div
+                    style="width: 100%; height: 8px; background-color: var(--border-color); border-radius: 4px; overflow: hidden;">
+                    <div id="upload-progress-bar"
+                        style="width: 0%; height: 100%; background-color: var(--success); transition: width 0.1s; border-radius: 4px;">
+                    </div>
                 </div>
             </div>
 
@@ -834,6 +844,21 @@
                         (保存配置)</button>
                 </div>
             </form>
+
+            <!-- System Logs Collapsible Section -->
+            <div class="gradio-block" style="margin-top: 24px;">
+                <details id="logs-details" ontoggle="handleLogsToggle(this)" style="outline: none;">
+                    <summary class="gradio-label" style="cursor: pointer; display: flex; justify-content: space-between; align-items: center; user-select: none; border-bottom: none; padding: 12px;">
+                        <span>系统运行日志 (System Console Logs - Click to expand)</span>
+                        <button type="button" class="btn" style="padding: 4px 10px; font-size: 0.75rem; height: auto;" onclick="event.stopPropagation(); clearLocalLogView();">清屏</button>
+                    </summary>
+                    <div style="padding: 12px; border-top: 1px solid var(--border-color); background: var(--block-bg);">
+                        <div id="log-console" style="background-color: #111827; color: #10b981; font-family: monospace; font-size: 0.85rem; padding: 16px; border-radius: 6px; height: 350px; overflow-y: auto; white-space: pre-wrap; line-height: 1.6; border: 1px solid #374151;">
+                            正在加载日志...
+                        </div>
+                    </div>
+                </details>
+            </div>
         </div>
     </div>
 
@@ -898,7 +923,8 @@
                         <div class="gradio-block">
                             <div class="gradio-label">评分 (Rating，0.0-5.0)</div>
                             <div class="gradio-input-wrap">
-                                <input type="number" id="meta-rating" class="gradio-input" min="0" max="5" step="0.1" placeholder="评分">
+                                <input type="number" id="meta-rating" class="gradio-input" min="0" max="5" step="0.1"
+                                    placeholder="评分">
                             </div>
                         </div>
                         <div class="gradio-block">
@@ -915,7 +941,8 @@
                     <div class="gradio-block">
                         <div class="gradio-label">漫画简介 (Summary)</div>
                         <div style="padding: 8px 12px;">
-                            <textarea id="meta-summary" class="gradio-input" style="height: 100px; resize: vertical;" placeholder="输入剧情简介..."></textarea>
+                            <textarea id="meta-summary" class="gradio-input" style="height: 100px; resize: vertical;"
+                                placeholder="输入剧情简介..."></textarea>
                         </div>
                     </div>
                 </div>
@@ -950,11 +977,13 @@
             await fetchComics();
             await fetchConfig();
             await fetchQueueStatus();
+            await fetchLogs();
 
             // Set up polling for queue status and comics updates
             if (pollingInterval) clearInterval(pollingInterval);
             pollingInterval = setInterval(async () => {
                 await fetchQueueStatus();
+                await fetchLogs();
                 // If there are processing items, refresh the list too
                 const hasProcessing = comicsData.some(c => !c.isReady);
                 if (hasProcessing) {
@@ -965,7 +994,10 @@
 
         // Helper: get fetch headers with auth token
         function getHeaders() {
-            const headers = { 'Content-Type': 'application/json' };
+            const headers = {
+                'Content-Type': 'application/json',
+                'x-comix-client': 'dashboard'
+            };
             const token = localStorage.getItem('comix_token');
             if (token) {
                 headers['x-comix-token'] = token;
@@ -978,11 +1010,66 @@
             document.querySelectorAll('.tab-btn').forEach(btn => btn.classList.remove('active'));
             document.querySelectorAll('.content-view').forEach(view => view.classList.remove('active'));
 
-            const activeBtn = Array.from(document.querySelectorAll('.tab-btn')).find(btn => btn.textContent.includes(tabName === 'bookshelf' ? '书架' : '设置'));
+            const activeBtn = Array.from(document.querySelectorAll('.tab-btn')).find(btn => {
+                if (tabName === 'bookshelf') return btn.textContent.includes('书架');
+                if (tabName === 'settings') return btn.textContent.includes('设置');
+                return false;
+            });
             if (activeBtn) activeBtn.classList.add('active');
 
             const activeView = document.getElementById(`tab-${tabName}`);
             if (activeView) activeView.classList.add('active');
+
+            // If switching to settings tab, fetch logs immediately if log details is open
+            if (tabName === 'settings' && logsActive) {
+                fetchLogs();
+            }
+        }
+
+        let logsActive = false;
+        let lastLogsText = '';
+
+        function handleLogsToggle(detailsElem) {
+            logsActive = detailsElem.open;
+            if (logsActive) {
+                fetchLogs();
+            }
+        }
+
+        // GET /api/logs
+        async function fetchLogs() {
+            const settingsTab = document.getElementById('tab-settings');
+            if (!settingsTab || !settingsTab.classList.contains('active') || !logsActive) return;
+
+            try {
+                const response = await fetch('/api/logs', { headers: getHeaders() });
+                if (handleApiError(response)) return;
+
+                if (response.ok) {
+                    const data = await response.json();
+                    const logs = data.logs || [];
+                    const consoleElem = document.getElementById('log-console');
+                    if (!consoleElem) return;
+
+                    const newLogsText = logs.join('\n');
+                    if (newLogsText !== lastLogsText) {
+                        lastLogsText = newLogsText;
+                        const atBottom = consoleElem.scrollHeight - consoleElem.scrollTop - consoleElem.clientHeight < 50;
+                        consoleElem.textContent = newLogsText || '暂无日志输出...';
+                        if (atBottom || consoleElem.scrollTop === 0) {
+                            consoleElem.scrollTop = consoleElem.scrollHeight;
+                        }
+                    }
+                }
+            } catch (e) {
+                console.error('获取运行日志失败', e);
+            }
+        }
+
+        function clearLocalLogView() {
+            const consoleElem = document.getElementById('log-console');
+            if (consoleElem) consoleElem.textContent = '已清屏...';
+            lastLogsText = '';
         }
 
         // Show Toast Notification
@@ -1299,14 +1386,15 @@
 
             const xhr = new XMLHttpRequest();
             xhr.open('POST', `/api/upload?filename=${encodeURIComponent(file.name)}`, true);
-            
+
             // 如果配置了 API Token
             const token = localStorage.getItem('comix_token');
             if (token) {
                 xhr.setRequestHeader('x-comix-token', token);
             }
+            xhr.setRequestHeader('x-comix-client', 'dashboard');
 
-            xhr.upload.onprogress = function(e) {
+            xhr.upload.onprogress = function (e) {
                 if (e.lengthComputable) {
                     const percent = Math.round((e.loaded / e.total) * 100);
                     percentText.textContent = `${percent}%`;
@@ -1314,7 +1402,7 @@
                 }
             };
 
-            xhr.onload = function() {
+            xhr.onload = function () {
                 container.style.display = 'none';
                 input.value = ''; // 清空选择
                 if (xhr.status === 200) {
@@ -1324,7 +1412,7 @@
                         // 自动刷新书架与队列
                         fetchQueueStatus();
                         fetchComics();
-                    } catch(e) {
+                    } catch (e) {
                         showToast('上传成功，但解析响应失败', 'success');
                         fetchComics();
                     }
@@ -1332,13 +1420,13 @@
                     try {
                         const err = JSON.parse(xhr.responseText);
                         showToast(`❌ 上传失败: ${err.error}`, 'error');
-                    } catch(e) {
+                    } catch (e) {
                         showToast(`❌ 上传失败，状态码: ${xhr.status}`, 'error');
                     }
                 }
             };
 
-            xhr.onerror = function() {
+            xhr.onerror = function () {
                 container.style.display = 'none';
                 input.value = '';
                 showToast('❌ 网络错误，上传中断', 'error');

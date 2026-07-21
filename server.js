@@ -8,6 +8,38 @@ import path from 'path';
 import sharp from 'sharp';
 import crypto from 'crypto';
 
+// --- 内存日志收集 (Ring Buffer, 限制最新 200 条，不落盘) ---
+const LOG_LIMIT = 200;
+const memoryLogs = [];
+
+function addLogToMemory(message) {
+    memoryLogs.push(message);
+    if (memoryLogs.length > LOG_LIMIT) {
+        memoryLogs.shift();
+    }
+}
+
+const originalConsoleLog = console.log;
+const originalConsoleError = console.error;
+
+function getLogTimestamp() {
+    const now = new Date();
+    const pad = (n) => String(n).padStart(2, '0');
+    return `[${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())} ${pad(now.getHours())}:${pad(now.getMinutes())}:${pad(now.getSeconds())}]`;
+}
+
+console.log = function (...args) {
+    const formatted = args.map(arg => typeof arg === 'object' ? JSON.stringify(arg) : String(arg)).join(' ');
+    originalConsoleLog.apply(console, args);
+    addLogToMemory(`${getLogTimestamp()} ${formatted}`);
+};
+
+console.error = function (...args) {
+    const formatted = args.map(arg => typeof arg === 'object' ? JSON.stringify(arg) : String(arg)).join(' ');
+    originalConsoleError.apply(console, args);
+    addLogToMemory(`${getLogTimestamp()} [ERROR] ${formatted}`);
+};
+
 const app = express();
 app.use(cors()); // 允许跨域请求，方便 Android 客户端或 Web 端调用
 app.use(express.json()); // 用于解析控制面板修改配置时的 JSON 载荷
@@ -33,6 +65,14 @@ app.use((req, res, next) => {
     const userAgent = req.headers['user-agent'] || 'Unknown';
 
     res.on('finish', () => {
+        // 过滤管理面板背景高频轮询的静默日志（当状态为 200 或 304 成功，且来自管理面板时，静默 /api/queue, /api/comics, /api/config, /api/logs）
+        const isFromDashboard = req.headers['x-comix-client'] === 'dashboard';
+        const pathOnly = req.originalUrl.split('?')[0];
+        const isPollingUrl = pathOnly === '/api/queue' || pathOnly === '/api/comics' || pathOnly === '/api/config' || pathOnly === '/api/logs';
+        if (isFromDashboard && isPollingUrl && (res.statusCode === 200 || res.statusCode === 304)) {
+            return;
+        }
+
         // 如果是高频的页面图片请求，进行频率限制（首包必报，之后每隔 5 分钟限制报一次）
         if (req.originalUrl.includes('/page/')) {
             const match = req.originalUrl.match(/\/api\/comics\/([^/]+)\/page/);
@@ -727,6 +767,21 @@ app.post('/api/upload', async (req, res) => {
         } catch (e) {}
         res.status(500).json({ error: '上传保存失败: ' + err.message });
     }
+});
+
+/**
+ * 获取内存中的最新系统日志 (不落盘)
+ * GET /api/logs
+ */
+app.get('/api/logs', (req, res) => {
+    // 校验 Token（如果配置了 API_KEY）
+    if (config.API_KEY) {
+        const token = req.headers['x-comix-token'];
+        if (token !== config.API_KEY) {
+            return res.status(401).json({ error: 'Unauthorized: Invalid token' });
+        }
+    }
+    res.json({ logs: memoryLogs });
 });
 
 app.listen(PORT, async () => {
