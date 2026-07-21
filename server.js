@@ -66,7 +66,10 @@ app.use((req, res, next) => {
 
     res.on('finish', () => {
         // 过滤管理面板背景高频轮询的静默日志（当状态为 200 或 304 成功，且来自管理面板时，静默 /api/queue, /api/comics, /api/config, /api/logs）
-        const isFromDashboard = req.headers['x-comix-client'] === 'dashboard';
+        const referer = req.headers.referer || '';
+        const isFromDashboard = req.headers['x-comix-client'] === 'dashboard' || 
+                                referer.includes('/dashboard.html') || 
+                                (req.headers.host && referer.includes(req.headers.host));
         const pathOnly = req.originalUrl.split('?')[0];
         const isPollingUrl = pathOnly === '/api/queue' || pathOnly === '/api/comics' || pathOnly === '/api/config' || pathOnly === '/api/logs';
         if (isFromDashboard && isPollingUrl && (res.statusCode === 200 || res.statusCode === 304)) {
