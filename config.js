@@ -71,7 +71,17 @@ export const config = {
     PORT: settings.PORT !== undefined ? parseInt(settings.PORT, 10) : (parseInt(process.env.PORT, 10) || 3000),
 
     // 鉴权 API 秘钥 (如果设置为空，则视为禁用安全校验，建议在生产环境强覆盖)
-    API_KEY: settings.API_KEY !== undefined ? settings.API_KEY : (process.env.API_KEY !== undefined ? process.env.API_KEY : '')
+    API_KEY: settings.API_KEY !== undefined ? settings.API_KEY : (process.env.API_KEY !== undefined ? process.env.API_KEY : ''),
+
+    MAX_LIBRARY_ITEMS: parseInt(process.env.MAX_LIBRARY_ITEMS, 10) || 20000,
+    MAX_ARCHIVE_ENTRIES: parseInt(process.env.MAX_ARCHIVE_ENTRIES, 10) || 10000,
+    MAX_PAGES_PER_COMIC: parseInt(process.env.MAX_PAGES_PER_COMIC, 10) || 10000,
+    MAX_PAGE_BYTES: parseInt(process.env.MAX_PAGE_BYTES, 10) || 96 * 1024 * 1024,
+    MAX_PAGE_RESPONSE_BYTES: parseInt(process.env.MAX_PAGE_RESPONSE_BYTES, 10) || 64 * 1024 * 1024,
+    MAX_EXTRACTED_BYTES: parseInt(process.env.MAX_EXTRACTED_BYTES, 10) || 32 * 1024 * 1024 * 1024,
+    MAX_UPLOAD_BYTES: parseInt(process.env.MAX_UPLOAD_BYTES, 10) || 16 * 1024 * 1024 * 1024,
+    MAX_METADATA_BYTES: parseInt(process.env.MAX_METADATA_BYTES, 10) || 2 * 1024 * 1024,
+    MAX_COMIC_ID_LENGTH: parseInt(process.env.MAX_COMIC_ID_LENGTH, 10) || 256
 };
 
 /**

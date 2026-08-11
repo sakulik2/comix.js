@@ -1,12 +1,21 @@
 import { config, saveConfig } from './config.js';
 import { runActiveScan } from './scanner.js';
-import { addBookToQueue, queue, pendingTasks } from './queueManager.js';
+import { addBookToQueue, queue, pendingTasks, taskStates } from './queueManager.js';
 import express from 'express';
 import cors from 'cors';
 import fs from 'fs-extra';
 import path from 'path';
 import sharp from 'sharp';
 import crypto from 'crypto';
+import { Transform } from 'stream';
+import { pipeline } from 'stream/promises';
+import {
+    resolveComicCacheDirectory,
+    resolveContainedPath,
+    resolveLibraryFile,
+    sanitizeLibraryFilename,
+    validateComicId
+} from './resourcePolicy.js';
 
 // --- 内存日志收集 (Ring Buffer, 限制最新 200 条，不落盘) ---
 const LOG_LIMIT = 200;
@@ -118,9 +127,13 @@ const indexCache = new Map();
 
 async function getIndex(comicId) {
     if (indexCache.has(comicId)) return indexCache.get(comicId);
-    const indexPath = path.join(config.CACHE_LIBRARY_PATH, `comic_${comicId}`, 'index.json');
+    const indexPath = path.join(resolveComicCacheDirectory(config.CACHE_LIBRARY_PATH, comicId), 'index.json');
     try {
         const index = await fs.readJson(indexPath);
+        if (!Array.isArray(index) || index.length > config.MAX_PAGES_PER_COMIC) {
+            throw new Error('页面索引格式无效或页数超限');
+        }
+        index.forEach((entry) => sanitizeLibraryFilename(entry));
         indexCache.set(comicId, index);
         return index;
     } catch (e) {
@@ -134,7 +147,7 @@ const metadataCache = new Map();
 
 async function getMetadata(comicId, isReady) {
     if (metadataCache.has(comicId)) return metadataCache.get(comicId);
-    const metaPath = path.join(config.CACHE_LIBRARY_PATH, `comic_${comicId}`, 'metadata.json');
+    const metaPath = path.join(resolveComicCacheDirectory(config.CACHE_LIBRARY_PATH, comicId), 'metadata.json');
     try {
         if (await fs.pathExists(metaPath)) {
             const meta = await fs.readJson(metaPath);
@@ -151,6 +164,19 @@ function clearAllCaches() {
     mappingCache = null;
     indexCache.clear();
     metadataCache.clear();
+}
+
+function getValidComicIds(mapping) {
+    return Object.keys(mapping).filter((comicId) => {
+        try {
+            validateComicId(comicId);
+            sanitizeLibraryFilename(mapping[comicId]);
+            return true;
+        } catch (error) {
+            console.error(`[Server] 已忽略不安全的漫画映射 [${comicId}]: ${error.message}`);
+            return false;
+        }
+    });
 }
 
 // --- 安全鉴权中间件 ---
@@ -186,7 +212,19 @@ app.get('/api', (_req, res) => {
     res.json({
         service: "comix.js",
         status: "Running",
-        apiVersion: "1.4.0"
+        apiVersion: "1.4.0",
+        protocolVersion: 2,
+        capabilities: {
+            pageResize: true,
+            processingStatus: true,
+            opaqueComicIds: true
+        },
+        limits: {
+            maxLibraryItems: config.MAX_LIBRARY_ITEMS,
+            maxPagesPerComic: config.MAX_PAGES_PER_COMIC,
+            maxPageBytes: config.MAX_PAGE_RESPONSE_BYTES,
+            maxResizeWidth: 3840
+        }
     });
 });
 
@@ -196,7 +234,12 @@ app.get('/api', (_req, res) => {
  */
 app.get('/api/comics', async (_req, res) => {
     const mapping = await getMapping();
-    const keys = Object.keys(mapping);
+    const keys = getValidComicIds(mapping);
+    if (keys.length > config.MAX_LIBRARY_ITEMS) {
+        return res.status(413).json({
+            error: `远程书架超过 ${config.MAX_LIBRARY_ITEMS} 本限制`
+        });
+    }
 
     const list = await Promise.all(keys.map(async (id) => {
         const index = await getIndex(id);
@@ -210,14 +253,14 @@ app.get('/api/comics', async (_req, res) => {
         const numId = keys.indexOf(id) + 1;
 
         return {
+            ...localMeta,
             id,
             numId,
             title,
             originalName: filename,
-            coverUrl: `/api/comics/${id}/page/1`,
+            coverUrl: `/api/comics/${encodeURIComponent(id)}/page/1`,
             isReady,
-            totalPages: index ? index.length : 0,
-            ...localMeta
+            totalPages: index ? index.length : 0
         };
     }));
 
@@ -231,7 +274,12 @@ app.get('/api/comics', async (_req, res) => {
 app.get('/api/comics/search', async (req, res) => {
     const query = (req.query.q || '').toLowerCase();
     const mapping = await getMapping();
-    const keys = Object.keys(mapping);
+    const keys = getValidComicIds(mapping);
+    if (keys.length > config.MAX_LIBRARY_ITEMS) {
+        return res.status(413).json({
+            error: `远程书架超过 ${config.MAX_LIBRARY_ITEMS} 本限制`
+        });
+    }
 
     const list = await Promise.all(keys.map(async (id) => {
         const index = await getIndex(id);
@@ -244,14 +292,14 @@ app.get('/api/comics/search', async (req, res) => {
         const numId = keys.indexOf(id) + 1;
 
         return {
+            ...localMeta,
             id,
             numId,
             title,
             originalName: filename,
-            coverUrl: `/api/comics/${id}/page/1`,
+            coverUrl: `/api/comics/${encodeURIComponent(id)}/page/1`,
             isReady,
-            totalPages: index ? index.length : 0,
-            ...localMeta
+            totalPages: index ? index.length : 0
         };
     }));
 
@@ -279,7 +327,7 @@ app.get('/api/comics/:id', async (req, res) => {
 
     // 如果输入的是数字 ID，根据 1-based 索引解析出真实的 MD5 ID
     if (!filename && /^\d+$/.test(comicId)) {
-        const keys = Object.keys(mapping);
+        const keys = getValidComicIds(mapping);
         const index = parseInt(comicId, 10) - 1;
         if (index >= 0 && index < keys.length) {
             actualId = keys[index];
@@ -299,17 +347,20 @@ app.get('/api/comics/:id', async (req, res) => {
     const defaultTitle = filename.substring(0, filename.lastIndexOf('.')) || filename;
     const title = localMeta.title || defaultTitle;
     const numId = Object.keys(mapping).indexOf(actualId) + 1;
+    const taskState = taskStates.get(actualId);
+    const status = isReady ? 'ready' : (taskState?.status || 'processing');
 
     res.json({
+        ...localMeta,
         id: actualId,
         numId,
         title,
         originalName: filename,
-        coverUrl: `/api/comics/${actualId}/page/1`,
+        coverUrl: `/api/comics/${encodeURIComponent(actualId)}/page/1`,
         totalPages: index ? index.length : 0,
         isReady,
-        status: isReady ? 'ready' : 'processing',
-        ...localMeta
+        status,
+        error: status === 'failed' ? taskState?.error || '服务端处理失败' : null
     });
 });
 
@@ -331,7 +382,7 @@ app.get('/api/comics/:id/page/:pageNumber', async (req, res) => {
 
     // 如果输入的是数字 ID，根据 1-based 索引解析出真实的 MD5 ID
     if (!filename && /^\d+$/.test(comicId)) {
-        const keys = Object.keys(mapping);
+        const keys = getValidComicIds(mapping);
         const indexKey = parseInt(comicId, 10) - 1;
         if (indexKey >= 0 && indexKey < keys.length) {
             actualId = keys[indexKey];
@@ -346,12 +397,20 @@ app.get('/api/comics/:id/page/:pageNumber', async (req, res) => {
     const index = await getIndex(actualId);
 
     if (!index) {
-        const rawFilePath = path.join(config.RAW_LIBRARY_PATH, filename);
+        const taskState = taskStates.get(actualId);
+        if (taskState?.status === 'failed') {
+            return res.status(500).json({
+                status: 'failed',
+                error: taskState.error || '服务端处理失败'
+            });
+        }
+        const rawFilePath = resolveLibraryFile(config.RAW_LIBRARY_PATH, filename);
         if (!(await fs.pathExists(rawFilePath))) {
             return res.status(404).json({ error: '物理文件不存在' });
         }
 
         addBookToQueue(actualId, rawFilePath, config.CACHE_LIBRARY_PATH);
+        res.setHeader('Retry-After', '5');
         return res.status(202).json({ status: 'processing', message: '正在启动后台解压...' });
     }
 
@@ -360,20 +419,34 @@ app.get('/api/comics/:id/page/:pageNumber', async (req, res) => {
         return res.status(404).json({ error: '页码越界' });
     }
 
-    const imagePath = path.resolve(config.CACHE_LIBRARY_PATH, `comic_${actualId}`, imageFile);
+    const cacheDirectory = resolveComicCacheDirectory(config.CACHE_LIBRARY_PATH, actualId);
+    const imagePath = resolveContainedPath(cacheDirectory, imageFile);
+    if (!(await fs.pathExists(imagePath))) {
+        return res.status(404).json({ error: '页面图片不存在' });
+    }
+    const imageStat = await fs.stat(imagePath);
 
     // 支持按需缩放，利用 sharp 将内存计算压力下放到请求时，解约磁盘空间
     const targetWidth = parseInt(req.query.width, 10);
 
     // 追加 HTTP 缓存强控制，减轻服务端压力
-    res.setHeader('Cache-Control', 'public, max-age=604800, immutable'); // 强制缓存 1 星期
+    res.setHeader('Cache-Control', 'private, max-age=3600');
 
-    if (!isNaN(targetWidth) && targetWidth > 0 && targetWidth < 4000) {
+    const shouldResize = (!isNaN(targetWidth) && targetWidth > 0 && targetWidth <= 3840) ||
+        imageStat.size > config.MAX_PAGE_RESPONSE_BYTES;
+    if (shouldResize) {
+        const resizeWidth = !isNaN(targetWidth) && targetWidth > 0
+            ? Math.min(targetWidth, 3840)
+            : 3840;
+        const requestedQuality = parseInt(req.query.quality, 10);
+        const quality = Number.isInteger(requestedQuality)
+            ? Math.min(Math.max(requestedQuality, 1), 100)
+            : 85;
         res.type('image/webp');
         // 将源图片通过 sharp 管道流式吐给客户端，不产生临时文件
         sharp(imagePath)
-            .resize({ width: targetWidth, withoutEnlargement: true })
-            .webp({ quality: parseInt(req.query.quality, 10) || 85 })
+            .resize({ width: resizeWidth, withoutEnlargement: true })
+            .webp({ quality })
             .pipe(res)
             .on('error', (e) => {
                 if (!res.headersSent) res.status(500).json({ error: '原图处理失败' });
@@ -420,12 +493,12 @@ app.post('/api/comics/reprocess', async (req, res) => {
     try {
         console.log('[Server] 收到全库重建缓存请求...');
         const mapping = await getMapping();
-        const keys = Object.keys(mapping);
+        const keys = getValidComicIds(mapping);
         let count = 0;
 
         for (const id of keys) {
             const filename = mapping[id];
-            const cacheDir = path.join(config.CACHE_LIBRARY_PATH, `comic_${id}`);
+            const cacheDir = resolveComicCacheDirectory(config.CACHE_LIBRARY_PATH, id);
             if (await fs.pathExists(cacheDir)) {
                 await fs.remove(cacheDir);
             }
@@ -434,7 +507,7 @@ app.post('/api/comics/reprocess', async (req, res) => {
             indexCache.delete(id);
             metadataCache.delete(id);
 
-            const rawFilePath = path.join(config.RAW_LIBRARY_PATH, filename);
+            const rawFilePath = resolveLibraryFile(config.RAW_LIBRARY_PATH, filename);
             if (await fs.pathExists(rawFilePath)) {
                 addBookToQueue(id, rawFilePath, config.CACHE_LIBRARY_PATH);
                 count++;
@@ -462,7 +535,7 @@ app.post('/api/comics/:id/reprocess', async (req, res) => {
 
     // 如果输入的是数字 ID，根据 1-based 索引解析出真实的 MD5 ID
     if (!filename && /^\d+$/.test(comicId)) {
-        const keys = Object.keys(mapping);
+        const keys = getValidComicIds(mapping);
         const index = parseInt(comicId, 10) - 1;
         if (index >= 0 && index < keys.length) {
             actualId = keys[index];
@@ -476,7 +549,7 @@ app.post('/api/comics/:id/reprocess', async (req, res) => {
 
     try {
         console.log(`[Server] 收到漫画缓存重建请求: ${filename} (ID: ${actualId})...`);
-        const cacheDir = path.join(config.CACHE_LIBRARY_PATH, `comic_${actualId}`);
+        const cacheDir = resolveComicCacheDirectory(config.CACHE_LIBRARY_PATH, actualId);
         if (await fs.pathExists(cacheDir)) {
             await fs.remove(cacheDir);
         }
@@ -485,7 +558,7 @@ app.post('/api/comics/:id/reprocess', async (req, res) => {
         indexCache.delete(actualId);
         metadataCache.delete(actualId);
 
-        const rawFilePath = path.join(config.RAW_LIBRARY_PATH, filename);
+        const rawFilePath = resolveLibraryFile(config.RAW_LIBRARY_PATH, filename);
         if (!(await fs.pathExists(rawFilePath))) {
             return res.status(404).json({ error: '物理文件不存在，无法重建缓存' });
         }
@@ -513,7 +586,7 @@ app.delete('/api/comics/:id', async (req, res) => {
 
     // 如果输入的是数字 ID，根据 1-based 索引解析出真实的 MD5 ID
     if (!filename && /^\d+$/.test(comicId)) {
-        const keys = Object.keys(mapping);
+        const keys = getValidComicIds(mapping);
         const index = parseInt(comicId, 10) - 1;
         if (index >= 0 && index < keys.length) {
             actualId = keys[index];
@@ -527,13 +600,13 @@ app.delete('/api/comics/:id', async (req, res) => {
 
     try {
         // 1. 删除原始物理文件
-        const rawFilePath = path.join(config.RAW_LIBRARY_PATH, filename);
+        const rawFilePath = resolveLibraryFile(config.RAW_LIBRARY_PATH, filename);
         if (await fs.pathExists(rawFilePath)) {
             await fs.remove(rawFilePath);
         }
 
         // 2. 删除缓存文件夹
-        const cacheDir = path.join(config.CACHE_LIBRARY_PATH, `comic_${actualId}`);
+        const cacheDir = resolveComicCacheDirectory(config.CACHE_LIBRARY_PATH, actualId);
         if (await fs.pathExists(cacheDir)) {
             await fs.remove(cacheDir);
         }
@@ -565,7 +638,7 @@ app.post('/api/comics/:id/metadata', async (req, res) => {
     let filename = mapping[actualId];
 
     if (!filename && /^\d+$/.test(comicId)) {
-        const keys = Object.keys(mapping);
+        const keys = getValidComicIds(mapping);
         const index = parseInt(comicId, 10) - 1;
         if (index >= 0 && index < keys.length) {
             actualId = keys[index];
@@ -577,7 +650,7 @@ app.post('/api/comics/:id/metadata', async (req, res) => {
         return res.status(404).json({ error: '未找到该 ID 映射' });
     }
 
-    const cacheDir = path.join(config.CACHE_LIBRARY_PATH, `comic_${actualId}`);
+    const cacheDir = resolveComicCacheDirectory(config.CACHE_LIBRARY_PATH, actualId);
     try {
         await fs.ensureDir(cacheDir);
         const metaPath = path.join(cacheDir, 'metadata.json');
@@ -590,15 +663,24 @@ app.post('/api/comics/:id/metadata', async (req, res) => {
         }
 
         const newMeta = req.body;
+        const metadataText = (value, fallback = '', maxLength = 10000) => {
+            if (value === undefined) return fallback;
+            return String(value).slice(0, maxLength);
+        };
+        const parsedRating = newMeta.rating !== undefined ? Number(newMeta.rating) : existingMeta.rating;
         const updatedMeta = {
             ...existingMeta,
-            title: newMeta.title !== undefined ? String(newMeta.title) : (existingMeta.title || filename.substring(0, filename.lastIndexOf('.')) || filename),
-            authors: newMeta.authors !== undefined ? String(newMeta.authors) : (existingMeta.authors || ''),
-            summary: newMeta.summary !== undefined ? String(newMeta.summary) : (existingMeta.summary || ''),
-            genres: newMeta.genres !== undefined ? String(newMeta.genres) : (existingMeta.genres || ''),
-            publisher: newMeta.publisher !== undefined ? String(newMeta.publisher) : (existingMeta.publisher || ''),
-            year: newMeta.year !== undefined ? String(newMeta.year) : (existingMeta.year || ''),
-            rating: newMeta.rating !== undefined ? parseFloat(newMeta.rating) : (existingMeta.rating || null),
+            title: metadataText(newMeta.title, existingMeta.title || filename.substring(0, filename.lastIndexOf('.')) || filename, 500),
+            series: metadataText(newMeta.series, existingMeta.series || '', 500),
+            issueTitle: metadataText(newMeta.issueTitle, existingMeta.issueTitle || '', 500),
+            issueNumber: metadataText(newMeta.issueNumber, existingMeta.issueNumber || '', 50),
+            volumeNumber: metadataText(newMeta.volumeNumber, existingMeta.volumeNumber || '', 50),
+            authors: metadataText(newMeta.authors, existingMeta.authors || '', 2000),
+            summary: metadataText(newMeta.summary, existingMeta.summary || '', 20000),
+            genres: metadataText(newMeta.genres, existingMeta.genres || '', 2000),
+            publisher: metadataText(newMeta.publisher, existingMeta.publisher || '', 500),
+            year: metadataText(newMeta.year, existingMeta.year || '', 20),
+            rating: Number.isFinite(parsedRating) ? Math.min(Math.max(parsedRating, 0), 100) : null,
             isCompleted: newMeta.isCompleted !== undefined ? !!newMeta.isCompleted : (existingMeta.isCompleted || false)
         };
 
@@ -700,9 +782,23 @@ app.post('/api/upload', async (req, res) => {
         }
     }
 
-    const filename = req.query.filename;
+    if (!req.is('application/octet-stream')) {
+        return res.status(415).json({ error: '上传接口仅接受 application/octet-stream' });
+    }
+
+    let filename;
+    try {
+        filename = sanitizeLibraryFilename(String(req.query.filename || ''));
+    } catch (error) {
+        return res.status(400).json({ error: error.message });
+    }
     if (!filename) {
         return res.status(400).json({ error: '缺少 filename 参数，请在 URL 中提供 ?filename=xxx' });
+    }
+
+    const declaredLength = Number(req.headers['content-length']);
+    if (Number.isFinite(declaredLength) && declaredLength > config.MAX_UPLOAD_BYTES) {
+        return res.status(413).json({ error: '上传文件超过服务端大小限制' });
     }
 
     // 只允许常见的漫画压缩包或 PDF 格式
@@ -711,7 +807,7 @@ app.post('/api/upload', async (req, res) => {
         return res.status(400).json({ error: '不支持的文件类型，仅限 zip, cbz, rar, cbr, pdf' });
     }
 
-    const targetPath = path.join(config.RAW_LIBRARY_PATH, filename);
+    const targetPath = resolveLibraryFile(config.RAW_LIBRARY_PATH, filename);
     
     // 确保 RAW_LIBRARY_PATH 存在
     await fs.ensureDir(config.RAW_LIBRARY_PATH);
@@ -723,21 +819,26 @@ app.post('/api/upload', async (req, res) => {
     while (await fs.pathExists(finalPath)) {
         const base = path.basename(filename, ext);
         finalFilename = `${base}(${counter})${ext}`;
-        finalPath = path.join(config.RAW_LIBRARY_PATH, finalFilename);
+        finalPath = resolveLibraryFile(config.RAW_LIBRARY_PATH, finalFilename);
         counter++;
     }
 
     try {
         console.log(`[Server] 开始接收上传文件: ${finalFilename}...`);
-        const writeStream = fs.createWriteStream(finalPath);
-        
-        req.pipe(writeStream);
-
-        await new Promise((resolve, reject) => {
-            writeStream.on('finish', resolve);
-            req.on('error', reject);
-            writeStream.on('error', reject);
+        let receivedBytes = 0;
+        const limiter = new Transform({
+            transform(chunk, _encoding, callback) {
+                receivedBytes += chunk.length;
+                if (receivedBytes > config.MAX_UPLOAD_BYTES) {
+                    const error = new Error('上传文件超过服务端大小限制');
+                    error.statusCode = 413;
+                    callback(error);
+                    return;
+                }
+                callback(null, chunk);
+            }
         });
+        await pipeline(req, limiter, fs.createWriteStream(finalPath, { flags: 'wx' }));
 
         console.log(`[Server] 文件上传并保存成功: ${finalFilename}`);
 
@@ -768,7 +869,7 @@ app.post('/api/upload', async (req, res) => {
                 await fs.remove(finalPath);
             }
         } catch (e) {}
-        res.status(500).json({ error: '上传保存失败: ' + err.message });
+        res.status(err.statusCode === 413 ? 413 : 500).json({ error: '上传保存失败: ' + err.message });
     }
 });
 

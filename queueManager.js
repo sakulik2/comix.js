@@ -1,7 +1,7 @@
 import PQueue from 'p-queue';
 import fs from 'fs-extra';
-import path from 'path';
 import { extractComic } from './extractor.js';
+import { resolveComicCacheDirectory, validateComicId } from './resourcePolicy.js';
 
 import { config } from './config.js';
 
@@ -10,6 +10,7 @@ const queue = new PQueue({ concurrency: config.CONCURRENCY });
 
 // 用于存储正在排队中的 comicId，防止重复入队
 const pendingTasks = new Set();
+const taskStates = new Map();
 
 /**
  * 将漫画解压任务推入队列
@@ -18,23 +19,42 @@ const pendingTasks = new Set();
  * @param {string} cacheBaseDir 缓存根目录 (位于 /library/cache/)
  */
 export function addBookToQueue(comicId, rawFilePath, cacheBaseDir) {
+    validateComicId(comicId);
     // 如果该任务已在队列中或正在解压，则跳过
     if (pendingTasks.has(comicId)) {
         console.log(`[Queue] 任务已在队列中: ${comicId}`);
         return;
     }
 
-    const cacheDir = path.join(cacheBaseDir, `comic_${comicId}`);
+    pendingTasks.add(comicId);
+    taskStates.set(comicId, {
+        status: 'queued',
+        updatedAt: new Date().toISOString()
+    });
+
+    const cacheDir = resolveComicCacheDirectory(cacheBaseDir, comicId);
 
     // 将任务推入队列，不阻塞主线程
     queue.add(async () => {
-        pendingTasks.add(comicId);
+        taskStates.set(comicId, {
+            status: 'processing',
+            updatedAt: new Date().toISOString()
+        });
         console.log(`[Queue] 开始解压任务: ${comicId}`);
 
         try {
             await extractComic(rawFilePath, cacheDir);
+            taskStates.set(comicId, {
+                status: 'ready',
+                updatedAt: new Date().toISOString()
+            });
             console.log(`[Queue] 解压任务完成: ${comicId}`);
         } catch (error) {
+            taskStates.set(comicId, {
+                status: 'failed',
+                error: error instanceof Error ? error.message : String(error),
+                updatedAt: new Date().toISOString()
+            });
             console.error(`[Queue] 解压任务失败: ${comicId}`, error);
         } finally {
             pendingTasks.delete(comicId);
@@ -44,4 +64,4 @@ export function addBookToQueue(comicId, rawFilePath, cacheBaseDir) {
     console.log(`[Queue] 任务已成功加入队列: ${comicId}`);
 }
 
-export { queue, pendingTasks };
+export { queue, pendingTasks, taskStates };

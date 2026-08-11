@@ -1005,6 +1005,35 @@
             return headers;
         }
 
+        function escapeHtml(value) {
+            return String(value ?? '').replace(/[&<>'"]/g, char => ({
+                '&': '&amp;',
+                '<': '&lt;',
+                '>': '&gt;',
+                "'": '&#39;',
+                '"': '&quot;'
+            })[char]);
+        }
+
+        async function loadAuthenticatedCover(image, url) {
+            const headers = { 'x-comix-client': 'dashboard' };
+            const token = localStorage.getItem('comix_token');
+            if (token) headers['x-comix-token'] = token;
+
+            const response = await fetch(url, { headers });
+            if (!response.ok) throw new Error(`HTTP ${response.status}`);
+            const objectUrl = URL.createObjectURL(await response.blob());
+            try {
+                await new Promise((resolve, reject) => {
+                    image.addEventListener('load', resolve, { once: true });
+                    image.addEventListener('error', () => reject(new Error('封面解码失败')), { once: true });
+                    image.src = objectUrl;
+                });
+            } finally {
+                URL.revokeObjectURL(objectUrl);
+            }
+        }
+
         // Switch Tabs
         function switchTab(tabName) {
             document.querySelectorAll('.tab-btn').forEach(btn => btn.classList.remove('active'));
@@ -1196,18 +1225,21 @@
                 card.className = 'comic-card';
                 card.id = `comic-card-${comic.id}`;
 
-                const tokenQuery = localStorage.getItem('comix_token') ? `?token=${localStorage.getItem('comix_token')}` : '';
-                const coverSrc = comic.isReady ? `${comic.coverUrl}${tokenQuery}` : '';
+                const coverSrc = comic.isReady ? comic.coverUrl : '';
+                const title = escapeHtml(comic.title || comic.originalName);
+                const originalName = escapeHtml(comic.originalName);
+                const authors = escapeHtml(comic.authors);
+                const genres = escapeHtml(comic.genres);
 
                 card.innerHTML = `
                     <div class="comic-cover">
-                        ${coverSrc ? `<img src="${coverSrc}" alt="Cover" onerror="this.onerror=null; this.src=''; this.parentElement.innerHTML='<div class=\\'cover-placeholder\\'>📖</div>'">` : '<div class="cover-placeholder">📖</div>'}
+                        ${coverSrc ? '<img alt="Cover">' : '<div class="cover-placeholder">📖</div>'}
                         <span class="card-badge ${comic.isReady ? 'badge-ready' : 'badge-processing'}">
                             ${comic.isReady ? 'Ready' : 'Processing'}
                         </span>
                     </div>
                     <div class="comic-info">
-                        <div class="comic-title" title="${comic.title || comic.originalName}">${comic.title || comic.originalName}</div>
+                        <div class="comic-title" title="${title}">${title}</div>
                         <div class="comic-meta-row">
                             <span>书架编号:</span>
                             <span class="meta-val">#${comic.numId}</span>
@@ -1216,15 +1248,15 @@
                             <span>页数:</span>
                             <span class="meta-val">${comic.totalPages || '0'} P</span>
                         </div>
-                        ${comic.authors ? `
+                        ${authors ? `
                         <div class="comic-meta-row">
                             <span>作者:</span>
-                            <span class="meta-val" title="${comic.authors}">${comic.authors}</span>
+                            <span class="meta-val" title="${authors}">${authors}</span>
                         </div>` : ''}
-                        ${comic.genres ? `
+                        ${genres ? `
                         <div class="comic-meta-row">
                             <span>分类:</span>
-                            <span class="meta-val" title="${comic.genres}">${comic.genres}</span>
+                            <span class="meta-val" title="${genres}">${genres}</span>
                         </div>` : ''}
                         ${comic.year ? `
                         <div class="comic-meta-row">
@@ -1243,15 +1275,28 @@
                         </div>` : ''}
                         <div class="comic-meta-row" style="margin-top:auto; padding-top: 6px;">
                             <span>原始文件:</span>
-                            <span class="meta-val" title="${comic.originalName}">${comic.originalName}</span>
+                            <span class="meta-val" title="${originalName}">${originalName}</span>
                         </div>
                     </div>
                     <div class="card-actions">
-                        <button class="btn-card-reprocess" onclick="openMetadataModal('${comic.id}')">编辑元数据</button>
-                        <button class="btn-card-reprocess" onclick="reprocessComic('${comic.id}')">重建缓存</button>
-                        <button class="btn-card-delete" onclick="deleteComic('${comic.id}')">删除</button>
+                        <button class="btn-card-reprocess edit-metadata">编辑元数据</button>
+                        <button class="btn-card-reprocess reprocess-comic">重建缓存</button>
+                        <button class="btn-card-delete delete-comic">删除</button>
                     </div>
                 `;
+                const coverImage = card.querySelector('.comic-cover img');
+                if (coverImage) {
+                    loadAuthenticatedCover(coverImage, coverSrc).catch(() => {
+                        coverImage.remove();
+                        card.querySelector('.comic-cover').insertAdjacentHTML(
+                            'afterbegin',
+                            '<div class="cover-placeholder">📖</div>'
+                        );
+                    });
+                }
+                card.querySelector('.edit-metadata').addEventListener('click', () => openMetadataModal(comic.id));
+                card.querySelector('.reprocess-comic').addEventListener('click', () => reprocessComic(comic.id));
+                card.querySelector('.delete-comic').addEventListener('click', () => deleteComic(comic.id));
                 grid.appendChild(card);
             });
         }
@@ -1317,7 +1362,7 @@
         async function reprocessComic(id) {
             showToast('已发送缓存重建请求...', 'success');
             try {
-                const response = await fetch(`/api/comics/${id}/reprocess`, {
+                const response = await fetch(`/api/comics/${encodeURIComponent(id)}/reprocess`, {
                     method: 'POST',
                     headers: getHeaders()
                 });
@@ -1343,7 +1388,7 @@
 
             showToast('正在删除漫画...', 'success');
             try {
-                const response = await fetch(`/api/comics/${id}`, {
+                const response = await fetch(`/api/comics/${encodeURIComponent(id)}`, {
                     method: 'DELETE',
                     headers: getHeaders()
                 });
@@ -1393,6 +1438,7 @@
                 xhr.setRequestHeader('x-comix-token', token);
             }
             xhr.setRequestHeader('x-comix-client', 'dashboard');
+            xhr.setRequestHeader('Content-Type', 'application/octet-stream');
 
             xhr.upload.onprogress = function (e) {
                 if (e.lengthComputable) {
@@ -1532,7 +1578,7 @@
 
             showToast('正在保存元数据...', 'success');
             try {
-                const response = await fetch(`/api/comics/${comicId}/metadata`, {
+                const response = await fetch(`/api/comics/${encodeURIComponent(comicId)}/metadata`, {
                     method: 'POST',
                     headers: getHeaders(),
                     body: JSON.stringify(body)

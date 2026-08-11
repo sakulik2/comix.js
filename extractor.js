@@ -1,4 +1,4 @@
-import { exec } from 'child_process';
+import { execFile } from 'child_process';
 import { promisify } from 'util';
 import fs from 'fs-extra';
 import path from 'path';
@@ -6,7 +6,9 @@ import sharp from 'sharp';
 import PQueue from 'p-queue';
 import { config } from './config.js';
 
-const execAsync = promisify(exec);
+const execFileAsync = promisify(execFile);
+const IMAGE_EXTENSIONS = new Set(['.jpg', '.jpeg', '.png', '.bmp', '.gif', '.webp']);
+const EXTRACT_TIMEOUT_MS = 30 * 60 * 1000;
 
 /**
  * 核心解压 Worker
@@ -31,6 +33,8 @@ export async function extractComic(rawFilePath, cacheDir) {
             throw new Error(`不支持的文件格式: ${ext}`);
         }
 
+        await validateExtractedFiles(cacheDir);
+
         // 根据配置进行图片处理：转码优化或轻量化整理
         if (config.OPTIMIZE_IMAGES) {
             await optimizeImages(cacheDir);
@@ -41,6 +45,7 @@ export async function extractComic(rawFilePath, cacheDir) {
         // 统一后处理：自然排序并生成索引
         await generateIndex(cacheDir);
     } catch (error) {
+        await fs.emptyDir(cacheDir).catch(() => {});
         console.error(`[Extractor] 任务失败: ${rawFilePath}`, error);
         throw error;
     }
@@ -53,8 +58,11 @@ async function extractCBR(source, target) {
     // e: 提取内容到当前目录
     // -y: 自动确认
     // -inul: 禁用所有输出 (静默模式)
-    const cmd = `unrar e -y -inul "${source}" "${target}/"`;
-    await execAsync(cmd);
+    await execFileAsync(
+        'unrar',
+        ['e', '-y', '-inul', source, `${target}${path.sep}`],
+        { timeout: EXTRACT_TIMEOUT_MS, maxBuffer: 1024 * 1024 }
+    );
 }
 
 /**
@@ -63,8 +71,11 @@ async function extractCBR(source, target) {
 async function extractCBZ(source, target) {
     // -j: 忽略目录结构 (junk paths)，摊平提取
     // -q: 静默模式
-    const cmd = `unzip -j -q "${source}" -d "${target}/"`;
-    await execAsync(cmd);
+    await execFileAsync(
+        'unzip',
+        ['-j', '-q', source, '-d', target],
+        { timeout: EXTRACT_TIMEOUT_MS, maxBuffer: 1024 * 1024 }
+    );
 }
 
 /**
@@ -74,8 +85,48 @@ async function extractPDF(source, target) {
     // -jpeg: 输出为 JPEG
     // -rx 150 -ry 150: 设置分辨率为 150 DPI
     // 输出文件名前缀为 "page" -> 将生成 page-1.jpg, page-2.jpg 等
-    const cmd = `pdftoppm -jpeg -rx 150 -ry 150 "${source}" "${target}/page"`;
-    await execAsync(cmd);
+    await execFileAsync(
+        'pdftoppm',
+        ['-jpeg', '-rx', '150', '-ry', '150', source, path.join(target, 'page')],
+        { timeout: EXTRACT_TIMEOUT_MS, maxBuffer: 1024 * 1024 }
+    );
+}
+
+async function validateExtractedFiles(cacheDir) {
+    const pendingDirectories = [cacheDir];
+    let entryCount = 0;
+    let totalBytes = 0;
+
+    while (pendingDirectories.length > 0) {
+        const currentDirectory = pendingDirectories.pop();
+        const entries = await fs.readdir(currentDirectory, { withFileTypes: true });
+        for (const entry of entries) {
+            const entryPath = path.join(currentDirectory, entry.name);
+            if (entry.isDirectory()) {
+                pendingDirectories.push(entryPath);
+                continue;
+            }
+
+            entryCount++;
+            if (entryCount > config.MAX_ARCHIVE_ENTRIES) {
+                throw new Error(`压缩包条目超过 ${config.MAX_ARCHIVE_ENTRIES} 个限制`);
+            }
+
+            const stat = await fs.stat(entryPath);
+            totalBytes += stat.size;
+            if (totalBytes > config.MAX_EXTRACTED_BYTES) {
+                throw new Error(`漫画解压总量超过 ${Math.floor(config.MAX_EXTRACTED_BYTES / 1024 / 1024)}MB 限制`);
+            }
+
+            const extension = path.extname(entry.name).toLowerCase();
+            if (IMAGE_EXTENSIONS.has(extension) && stat.size > config.MAX_PAGE_BYTES) {
+                throw new Error(`页面 ${entry.name} 超过 ${Math.floor(config.MAX_PAGE_BYTES / 1024 / 1024)}MB 限制`);
+            }
+            if ((extension === '.xml' || extension === '.json') && stat.size > config.MAX_METADATA_BYTES) {
+                throw new Error(`元数据 ${entry.name} 超过 ${Math.floor(config.MAX_METADATA_BYTES / 1024 / 1024)}MB 限制`);
+            }
+        }
+    }
 }
 
 /**
@@ -233,6 +284,10 @@ async function extractMetadata(cacheDir) {
     if (!(await fs.pathExists(infoPath))) return;
 
     try {
+        const infoStat = await fs.stat(infoPath);
+        if (infoStat.size > config.MAX_METADATA_BYTES) {
+            throw new Error(`ComicInfo.xml 超过 ${Math.floor(config.MAX_METADATA_BYTES / 1024 / 1024)}MB 限制`);
+        }
         const content = await fs.readFile(infoPath, 'utf8');
         const parser = new XMLParser();
         const jsonObj = parser.parse(content);
@@ -281,6 +336,9 @@ async function generateIndex(cacheDir) {
     // 目录支持混杂多种格式的图片
     const imageExtensions = ['.jpg', '.jpeg', '.png', '.bmp', '.gif', '.webp'];
     const imageFiles = files.filter(file => imageExtensions.includes(path.extname(file).toLowerCase()));
+    if (imageFiles.length > config.MAX_PAGES_PER_COMIC) {
+        throw new Error(`漫画页数超过 ${config.MAX_PAGES_PER_COMIC} 页限制`);
+    }
 
     const collator = new Intl.Collator(undefined, {
         numeric: true,

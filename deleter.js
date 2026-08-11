@@ -1,5 +1,9 @@
 import fs from 'fs-extra';
-import path from 'path';
+import {
+    resolveComicCacheDirectory,
+    resolveLibraryFile,
+    validateComicId
+} from './resourcePolicy.js';
 import { config } from './config.js';
 
 async function main() {
@@ -11,7 +15,7 @@ async function main() {
 
     const PORT = config.PORT || 3000;
     const API_KEY = config.API_KEY || '';
-    const url = `http://127.0.0.1:${PORT}/api/comics/${comicId}`;
+    const url = `http://127.0.0.1:${PORT}/api/comics/${encodeURIComponent(comicId)}`;
 
     console.log(`[Deleter] 优先尝试通过 HTTP API 向正在运行的 Express 服务发送删除指令...`);
     try {
@@ -55,7 +59,9 @@ async function main() {
 
     // 如果输入的是数字 ID，根据 1-based 索引解析出真实的 MD5 ID
     if (!filename && /^\d+$/.test(comicId)) {
-        const keys = Object.keys(mapping);
+        const keys = Object.keys(mapping).filter((id) => {
+            try { validateComicId(id); return true; } catch { return false; }
+        });
         const index = parseInt(comicId, 10) - 1;
         if (index >= 0 && index < keys.length) {
             actualId = keys[index];
@@ -70,7 +76,7 @@ async function main() {
 
     try {
         // 1. 删除原始物理文件
-        const rawFilePath = path.join(config.RAW_LIBRARY_PATH, filename);
+        const rawFilePath = resolveLibraryFile(config.RAW_LIBRARY_PATH, filename);
         if (await fs.pathExists(rawFilePath)) {
             await fs.remove(rawFilePath);
             console.log(`[Deleter] 已物理删除原始文件: ${rawFilePath}`);
@@ -79,7 +85,7 @@ async function main() {
         }
 
         // 2. 删除缓存文件夹
-        const cacheDir = path.join(config.CACHE_LIBRARY_PATH, `comic_${actualId}`);
+        const cacheDir = resolveComicCacheDirectory(config.CACHE_LIBRARY_PATH, actualId);
         if (await fs.pathExists(cacheDir)) {
             await fs.remove(cacheDir);
             console.log(`[Deleter] 已清理缓存文件夹: ${cacheDir}`);
