@@ -22,3 +22,5 @@ logs/
 
 # Output files (compressed/extracted comics)
 test/
+!/test/
+!/test/*.test.js
