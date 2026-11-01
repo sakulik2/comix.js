@@ -119,7 +119,7 @@ docker compose up -d --build
 {
   "service": "comix.js",
   "status": "Running",
-  "apiVersion": "1.4.0",
+  "apiVersion": "1.4.1",
   "protocolVersion": 2,
   "capabilities": { "pageResize": true, "processingStatus": true, "opaqueComicIds": true },
   "limits": { "maxLibraryItems": 20000, "maxPagesPerComic": 10000, "maxPageBytes": 67108864, "maxResizeWidth": 3840 }

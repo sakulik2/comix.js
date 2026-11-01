@@ -212,7 +212,7 @@ app.get('/api', (_req, res) => {
     res.json({
         service: "comix.js",
         status: "Running",
-        apiVersion: "1.4.0",
+        apiVersion: "1.4.1",
         protocolVersion: 2,
         capabilities: {
             pageResize: true,
