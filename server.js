@@ -6,10 +6,10 @@ import cors from 'cors';
 import fs from 'fs-extra';
 import path from 'path';
 import sharp from 'sharp';
-import crypto from 'crypto';
 import { Transform } from 'stream';
 import { pipeline } from 'stream/promises';
 import {
+    createComicId,
     resolveComicCacheDirectory,
     resolveContainedPath,
     resolveLibraryFile,
@@ -774,14 +774,7 @@ app.get('/api/queue', (req, res) => {
  * 请求体为漫画文件的原始二进制流 (Content-Type: application/octet-stream)
  */
 app.post('/api/upload', async (req, res) => {
-    // 校验 Token（如果配置了 API_KEY）
-    if (config.API_KEY) {
-        const token = req.headers['x-comix-token'];
-        if (token !== config.API_KEY) {
-            return res.status(401).json({ error: 'Unauthorized: Invalid token' });
-        }
-    }
-
+    // 鉴权由 /api 全局中间件统一处理（支持 x-comix-token 请求头或 ?token= 参数）
     if (!req.is('application/octet-stream')) {
         return res.status(415).json({ error: '上传接口仅接受 application/octet-stream' });
     }
@@ -842,24 +835,24 @@ app.post('/api/upload', async (req, res) => {
 
         console.log(`[Server] 文件上传并保存成功: ${finalFilename}`);
 
-        // 为该书文件名计算 MD5 作为唯一 ID
-        const fileMd5 = crypto.createHash('md5').update(finalFilename).digest('hex');
-        
-        // 更新 mapping.json
+        // 与扫描器使用同一套 ID 规则：优先取文件名（去后缀），冲突或不安全时使用 SHA-256
         const mapping = await getMapping();
-        mapping[fileMd5] = finalFilename;
+        const comicId = createComicId(finalFilename, ext, mapping);
+
+        // 更新 mapping.json
+        mapping[comicId] = finalFilename;
         await fs.writeJson(config.MAPPING_FILE, mapping, { spaces: 2 });
 
         // 清空映射内存缓存
         mappingCache = null;
 
         // 加入后台解压解密优化队列
-        addBookToQueue(fileMd5, finalPath, config.CACHE_LIBRARY_PATH);
+        addBookToQueue(comicId, finalPath, config.CACHE_LIBRARY_PATH);
 
         res.json({
             status: 'success',
             message: `文件 ${finalFilename} 上传成功，并已推入后台处理队列`,
-            id: fileMd5
+            id: comicId
         });
     } catch (err) {
         console.error('[Server] 上传保存失败:', err);
@@ -878,13 +871,7 @@ app.post('/api/upload', async (req, res) => {
  * GET /api/logs
  */
 app.get('/api/logs', (req, res) => {
-    // 校验 Token（如果配置了 API_KEY）
-    if (config.API_KEY) {
-        const token = req.headers['x-comix-token'];
-        if (token !== config.API_KEY) {
-            return res.status(401).json({ error: 'Unauthorized: Invalid token' });
-        }
-    }
+    // 鉴权由 /api 全局中间件统一处理
     res.json({ logs: memoryLogs });
 });
 
